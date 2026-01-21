@@ -329,8 +329,12 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         logging.info("No or not enough matches found to rectify image pair")
         return None, None, None, None, False
 
-    # compute rectifying homographies
-    H1, H2, F = rectification_homographies(matches, x, y, w, h, debug=debug)
+    try:
+        # compute rectifying homographies
+        H1, H2, F = rectification_homographies(matches, x, y, w, h, debug=debug)
+    except AssertionError:
+        logging.info("rectification.rectify_pair.rectification_homographies assertion failed")
+        return None, None, None, None, False
 
     if cfg['register_with_shear']:
         # compose H2 with a horizontal shear to reduce the disparity range
