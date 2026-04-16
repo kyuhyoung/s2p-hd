@@ -1,0 +1,334 @@
+# Copyright (C) 2026
+# Deep learning stereo matcher integration for s2p-hd.
+# Implements the DL correlator replacement described in Deep S2P (arXiv:2603.21882).
+
+import logging
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from s2p import common
+
+logger = logging.getLogger(__name__)
+
+# Path to diachronicstereo thirdparty directory.
+# Adjust this if your layout differs.
+_DIACHRONIC_STEREO_ROOT = None
+
+
+def _find_diachronicstereo_root():
+    """Locate the diachronicstereo repo relative to s2p-hd."""
+    global _DIACHRONIC_STEREO_ROOT
+    if _DIACHRONIC_STEREO_ROOT is not None:
+        return _DIACHRONIC_STEREO_ROOT
+
+    # Try common relative locations
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent / "diachronicstereo",
+        Path(__file__).resolve().parent.parent.parent / "diachronic-stereo",
+    ]
+    for c in candidates:
+        if (c / "thirdparty" / "__init__.py").exists():
+            _DIACHRONIC_STEREO_ROOT = c
+            return c
+
+    raise FileNotFoundError(
+        "Cannot find diachronicstereo repo. Expected it next to s2p-hd directory. "
+        "Searched: " + ", ".join(str(c) for c in candidates)
+    )
+
+
+def _ensure_thirdparty_on_path():
+    root = _find_diachronicstereo_root()
+    tp = str(root)
+    if tp not in sys.path:
+        sys.path.insert(0, tp)
+
+
+# --------------- Image I/O helpers ---------------
+
+
+def _read_rectified_image(path):
+    """
+    Read a rectified image (GeoTIFF) and return [1, 3, H, W] float32 tensor in [0, 1].
+    Single-band images are replicated to 3 channels.
+    """
+    arr = common.rio_read_as_array_with_nans(path)
+    if np.isnan(arr).any():
+        arr = np.nan_to_num(arr, nan=0.0)
+
+    # Handle dimensionality
+    if arr.ndim == 2:
+        arr = np.repeat(arr[:, :, np.newaxis], 3, axis=2)
+    elif arr.ndim == 3 and arr.shape[2] == 1:
+        arr = np.repeat(arr, 3, axis=2)
+    elif arr.ndim == 3 and arr.shape[2] > 3:
+        arr = arr[:, :, :3]
+
+    # Normalize to [0, 1]
+    vmin, vmax = float(arr.min()), float(arr.max())
+    if vmax > 1.0:
+        if vmax <= 255.0:
+            arr = arr.astype(np.float32) / 255.0
+        else:
+            arr = (arr.astype(np.float32) - vmin) / (vmax - vmin + 1e-12)
+    else:
+        arr = arr.astype(np.float32)
+
+    tensor = torch.from_numpy(arr).permute(2, 0, 1).float()
+    return tensor.unsqueeze(0)  # [1, 3, H, W]
+
+
+def _pad_to_multiple(x, multiple=32):
+    """Symmetric replicate-pad so H & W are divisible by multiple."""
+    h, w = x.shape[-2:]
+    ph = (multiple - h % multiple) % multiple
+    pw = (multiple - w % multiple) % multiple
+    pad = (pw // 2, pw - pw // 2, ph // 2, ph - ph // 2)  # left, right, top, bottom
+    return F.pad(x, pad, mode="replicate"), pad
+
+
+def _unpad(x, pad):
+    l, r, t, b = pad
+    h, w = x.shape[-2], x.shape[-1]
+    return x[..., t:h - b if b else h, l:w - r if r else w]
+
+
+# --------------- Model loading ---------------
+
+
+_loaded_model = None
+_loaded_model_name = None
+
+
+def load_model(cfg):
+    """
+    Load a DL stereo model. Caches the model so it's loaded only once.
+    Returns the model object and a predict function.
+    """
+    global _loaded_model, _loaded_model_name
+
+    model_name = cfg['dl_stereo_model']
+    ckpt = cfg['dl_stereo_ckpt']
+    device = cfg['dl_stereo_device']
+    dav2_path = cfg.get('dl_depth_anything_v2_path')
+
+    if _loaded_model is not None and _loaded_model_name == model_name:
+        return _loaded_model
+
+    if ckpt is None:
+        raise ValueError("cfg['dl_stereo_ckpt'] must be set when using dl_stereo matching")
+
+    _ensure_thirdparty_on_path()
+    import thirdparty
+
+    logger.info(f"Loading DL stereo model: {model_name} from {ckpt}")
+
+    if model_name == 'monster':
+        model = thirdparty.build_monster(
+            monster_ckpt=str(ckpt),
+            depth_anything_v2_path=str(dav2_path) if dav2_path else None,
+            device=device,
+        )
+        model.eval()
+
+    elif model_name == 'stereoanywhere':
+        stereo_model, depth_model = thirdparty.build_stereoanywhere(
+            stereo_ckpt=str(ckpt),
+            depth_anything_v2_path=str(dav2_path) if dav2_path else None,
+            device=device,
+        )
+        stereo_model.eval()
+        depth_model.eval()
+        model = (stereo_model, depth_model)
+
+    elif model_name == 'foundationstereo':
+        model = thirdparty.build_foundation_stereo(
+            foundation_ckpt=str(ckpt),
+            device=device,
+        )
+        model.eval()
+
+    else:
+        raise ValueError(f"Unknown dl_stereo_model: {model_name}")
+
+    _loaded_model = model
+    _loaded_model_name = model_name
+    logger.info(f"DL stereo model loaded: {model_name}")
+    return model
+
+
+# --------------- Inference ---------------
+
+
+@torch.no_grad()
+def _predict_monster(model, imgL, imgR, device):
+    """MonSter expects [0, 255] input. Returns disparity as numpy [H, W]."""
+    L = (imgL * 255.0).to(device)
+    R = (imgR * 255.0).to(device)
+    Lp, pad = _pad_to_multiple(L, 32)
+    Rp, _ = _pad_to_multiple(R, 32)
+    disp = model(Lp, Rp, iters=32, test_mode=True)  # [1, 1, H, W]
+    disp = _unpad(disp, pad).squeeze().cpu().numpy()
+    return disp
+
+
+@torch.no_grad()
+def _predict_stereoanywhere(models, imgL, imgR, device):
+    """StereoAnywhere expects [0, 1] input. Output sign is flipped."""
+    stereo_model, depth_model = models
+    L = imgL.to(device)
+    R = imgR.to(device)
+
+    # Monocular priors (no padding needed)
+    B, _, H, W = L.shape
+    mono_depths = depth_model.infer_image(
+        torch.cat([L, R], dim=0),
+        input_size_width=W,
+        input_size_height=H,
+    )
+    md_min, md_max = mono_depths.min(), mono_depths.max()
+    mono_depths = (mono_depths - md_min) / (md_max - md_min + 1e-8)
+    mono_left = mono_depths[:B]
+    mono_right = mono_depths[B:2 * B]
+
+    # Pad to 32
+    Lp, pad = _pad_to_multiple(L, 32)
+    Rp, _ = _pad_to_multiple(R, 32)
+    mlp, _ = _pad_to_multiple(mono_left, 32)
+    mrp, _ = _pad_to_multiple(mono_right, 32)
+
+    disp, _ = stereo_model(
+        Lp, Rp, mlp, mrp,
+        test_mode=True,
+        iters=stereo_model.args.iters,
+    )
+    disp = -disp  # StereoAnywhere outputs negative disparities
+    disp = _unpad(disp, pad).squeeze().cpu().numpy()
+    return disp
+
+
+@torch.no_grad()
+def _predict_foundationstereo(model, imgL, imgR, device):
+    """FoundationStereo expects [0, 255] input."""
+    _ensure_thirdparty_on_path()
+    import thirdparty
+
+    L = (imgL * 255.0).to(device)
+    R = (imgR * 255.0).to(device)
+
+    padder = thirdparty.FsInputPadder(L.shape, divis_by=32, force_square=False)
+    Lp, Rp = padder.pad(L, R)
+
+    with torch.autocast(device_type="cuda", enabled=str(device).startswith("cuda")):
+        disp = model.run_hierachical(Lp, Rp, iters=32, test_mode=True, small_ratio=0.5)
+
+    disp = padder.unpad(disp).squeeze().cpu().numpy()
+    return disp
+
+
+def predict_disparity(cfg, model, rect1_path, rect2_path):
+    """
+    Run DL stereo inference on a pair of rectified images.
+
+    Args:
+        cfg: s2p config dict
+        model: loaded DL model
+        rect1_path: path to rectified reference image
+        rect2_path: path to rectified secondary image
+
+    Returns:
+        disp: numpy array [H, W] in s2p-hd convention (right_x = left_x + disp)
+              Invalid pixels are NaN.
+    """
+    model_name = cfg['dl_stereo_model']
+    device = cfg['dl_stereo_device']
+
+    imgL = _read_rectified_image(rect1_path)
+    imgR = _read_rectified_image(rect2_path)
+
+    if model_name == 'monster':
+        disp = _predict_monster(model, imgL, imgR, device)
+    elif model_name == 'stereoanywhere':
+        disp = _predict_stereoanywhere(model, imgL, imgR, device)
+    elif model_name == 'foundationstereo':
+        disp = _predict_foundationstereo(model, imgL, imgR, device)
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    # DL models output disp = x_left - x_right (positive, left-to-right convention).
+    # s2p-hd expects disp such that right_x = left_x + disp.
+    # Therefore: s2p_disp = -model_disp
+    disp = -disp
+
+    return disp
+
+
+# --------------- Post-processing ---------------
+
+
+def left_right_consistency_check(disp_left, disp_right, threshold=2):
+    """
+    Left-right consistency check.
+    Invalidates pixels where |disp_L(x) + disp_R(x + disp_L(x))| > threshold.
+
+    Args:
+        disp_left: [H, W] disparity map (s2p convention: right_x = left_x + disp)
+        disp_right: [H, W] disparity map from right-to-left
+        threshold: consistency threshold in pixels
+
+    Returns:
+        disp_left with inconsistent pixels set to NaN
+    """
+    h, w = disp_left.shape
+    out = disp_left.copy()
+
+    # For each pixel (x, y) in left image, the corresponding pixel in right is (x + disp, y)
+    X, Y = np.meshgrid(np.arange(w), np.arange(h))
+    mnan = np.isnan(out)
+    disp_safe = np.nan_to_num(out, nan=0.0)
+    X_right = np.round(np.clip(X + disp_safe, 0, w - 1)).astype(int)
+
+    # Check consistency
+    inconsistent = np.abs(disp_safe + disp_right[Y, X_right]) > threshold
+    out[inconsistent] = np.nan
+    out[mnan] = np.nan
+    return out
+
+
+def compute_disparity_map(cfg, rect1, rect2, disp_path, mask_path,
+                          model, gpu_mem_manager=None):
+    """
+    Compute disparity map using a DL stereo matcher.
+    Drop-in replacement for block_matching.compute_disparity_map().
+
+    Args:
+        cfg: s2p config dict
+        rect1: path to rectified reference image
+        rect2: path to rectified secondary image
+        disp_path: path to output disparity map (GeoTIFF)
+        mask_path: path to output rejection mask (PNG)
+        model: loaded DL model
+        gpu_mem_manager: GPU memory manager (for VRAM coordination)
+    """
+    border_trim = cfg['dl_border_trim']
+
+    # Run inference
+    disp = predict_disparity(cfg, model, rect1, rect2)
+
+    # Border trim: invalidate edges (neural aperture problem)
+    if border_trim > 0:
+        disp[:border_trim, :] = np.nan
+        disp[-border_trim:, :] = np.nan
+        disp[:, :border_trim] = np.nan
+        disp[:, -border_trim:] = np.nan
+
+    # Create rejection mask (1 = valid, 0 = rejected)
+    mask = np.isfinite(disp).astype(np.uint8)
+
+    # Write outputs
+    common.rasterio_write(disp_path, disp.astype(np.float32))
+    common.rasterio_write(mask_path, mask)

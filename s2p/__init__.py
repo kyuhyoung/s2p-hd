@@ -40,6 +40,7 @@ from s2p import initialization
 from s2p import pointing_accuracy
 from s2p import rectification
 from s2p import block_matching
+from s2p import dl_stereo
 from s2p import masking
 from s2p import ply
 from s2p import triangulation
@@ -328,19 +329,25 @@ def stereo_matching(cfg, tile: Tile, i: int, gpu_mem_manager: GPUMemoryManager) 
     disp_min, disp_max = np.loadtxt(os.path.join(out_dir, 'disp_min_max.txt'))
 
     try:
-        # block_matching might fail (due to timeout)
-        block_matching.compute_disparity_map(cfg, rect1, rect2, disp, mask,
-                                             cfg['matching_algorithm'], disp_min,
-                                             disp_max, timeout=cfg['mgm_timeout'],
-                                             max_disp_range=cfg['max_disp_range'],
-                                             gpu_mem_manager=gpu_mem_manager)
+        if cfg['matching_algorithm'] == 'dl_stereo':
+            # Deep learning stereo matcher
+            model = dl_stereo.load_model(cfg)
+            dl_stereo.compute_disparity_map(cfg, rect1, rect2, disp, mask,
+                                            model, gpu_mem_manager=gpu_mem_manager)
+        else:
+            # Classical block matching (SGM/MGM etc.)
+            block_matching.compute_disparity_map(cfg, rect1, rect2, disp, mask,
+                                                 cfg['matching_algorithm'], disp_min,
+                                                 disp_max, timeout=cfg['mgm_timeout'],
+                                                 max_disp_range=cfg['max_disp_range'],
+                                                 gpu_mem_manager=gpu_mem_manager)
 
         # add margin around masked pixels
         masking.erosion(mask, mask, cfg['msk_erosion'])
     except Exception:
         # in case of timeout we should take note
         # TODO: take note of the failed block matching
-        logger.exception('block_matching.compute_disparity_map has failed:')
+        logger.exception('stereo matching has failed:')
 
     if cfg['clean_intermediate']:
         if len(cfg['images']) > 2:

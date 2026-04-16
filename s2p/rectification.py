@@ -346,7 +346,12 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         m = np.vstack(list({tuple(row) for row in m}))  # remove duplicates due to no alt range
         H2 = register_horizontally_shear(m, H1, H2, debug=debug)
 
-    # compose H2 with a horizontal translation to center disp range around 0
+    # compose H2 with a horizontal translation to adjust disparity range
+    # For DL stereo: enforce unipolar (negative) disparities with margin,
+    # so that higher altitude always corresponds to larger |disparity|.
+    # For classical matchers: center around 0 (original behavior).
+    use_dl = cfg.get('matching_algorithm') == 'dl_stereo'
+
     if sift_matches is not None:
         sift_matches = filter_matches_epipolar_constraint(F, sift_matches,
                                                           cfg['epipolar_thresh'])
@@ -356,8 +361,16 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
                 category=NoHorizontalRegistrationWarning,
             )
         else:
-            H2 = register_horizontally_translation(sift_matches, H1, H2,
-                                                   debug=debug)
+            if use_dl:
+                t_margin = cfg.get('dl_unipolarity_margin', 50)
+                H2 = register_horizontally_translation(sift_matches, H1, H2,
+                                                       flag='negative',
+                                                       debug=debug)
+                # apply additional margin so all disparities are well below zero
+                H2 = np.dot(common.matrix_translation(-t_margin, 0), H2)
+            else:
+                H2 = register_horizontally_translation(sift_matches, H1, H2,
+                                                       debug=debug)
 
     # compute disparity range
     if debug and sift_matches is not None:

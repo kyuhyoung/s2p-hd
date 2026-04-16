@@ -155,8 +155,19 @@ def get_default_config() -> dict:
     ### stereo matching parameters
 
     # stereo matching algorithm: 'tvl1', 'msmw', 'hirschmuller08',
-    # hirschmuller08_laplacian', 'sgbm', 'mgm', 'mgm_multi', 'stereosgm_gpu'
+    # hirschmuller08_laplacian', 'sgbm', 'mgm', 'mgm_multi', 'stereosgm_gpu',
+    # 'dl_stereo' (deep learning stereo matcher)
     cfg['matching_algorithm'] = 'mgm'
+
+    # deep learning stereo matcher settings (used when matching_algorithm == 'dl_stereo')
+    cfg['dl_stereo_model'] = 'monster'  # 'monster', 'stereoanywhere', 'foundationstereo'
+    cfg['dl_stereo_ckpt'] = None        # path to model checkpoint
+    cfg['dl_depth_anything_v2_path'] = None  # path to Depth Anything V2 (for monster/stereoanywhere)
+    cfg['dl_stereo_device'] = 'cuda:0'
+    cfg['dl_border_trim'] = 32          # border pixels to invalidate (neural aperture problem)
+    cfg['dl_lr_check'] = True           # left-right consistency check
+    cfg['dl_lr_threshold'] = 2          # left-right consistency threshold in pixels
+    cfg['dl_unipolarity_margin'] = 50   # disparity margin for unipolarity enforcement
 
     # this option allows to refine the disparity computed by the fast stereosgm_gpu 
     # it only works in combination with  cfg['matching_algorithm'] = 'stereosgm_gpu'
