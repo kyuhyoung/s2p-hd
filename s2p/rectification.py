@@ -134,6 +134,52 @@ def register_horizontally_translation(matches, H1, H2, flag='center', debug=Fals
     return np.dot(common.matrix_translation(-t, 0), H2)
 
 
+def disparity_grows_with_altitude(H1, H2, rpc1, rpc2, x_center, y_center, alt_ground):
+    """
+    Check whether disparity grows with altitude for the given homographies.
+
+    This is required for DL stereo matchers: after enforcing negative unipolar
+    disparities, higher altitude must produce larger |disparity| (more negative).
+    If this doesn't hold, the images need to be horizontally flipped.
+
+    Based on diachronicstereo Algorithm 1 (arXiv:2601.22808).
+
+    Args:
+        H1, H2: rectifying homographies (3x3 arrays)
+        rpc1, rpc2: RPC camera models
+        x_center, y_center: ROI center in original image coordinates
+        alt_ground: mean ground altitude
+
+    Returns:
+        True if disparity grows with altitude (correct orientation).
+    """
+    alt_high = alt_ground + 50
+
+    # project ground and elevated point through both cameras
+    lon, lat = rpc1.localization(x_center, y_center, alt_ground)
+
+    x1_g, y1_g = rpc1.projection(lon, lat, alt_ground)
+    x2_g, y2_g = rpc2.projection(lon, lat, alt_ground)
+    x1_h, y1_h = rpc1.projection(lon, lat, alt_high)
+    x2_h, y2_h = rpc2.projection(lon, lat, alt_high)
+
+    # apply homographies
+    p1_g = homography.points_apply_homography(H1, [[x1_g, y1_g]])[0]
+    p2_g = homography.points_apply_homography(H2, [[x2_g, y2_g]])[0]
+    p1_h = homography.points_apply_homography(H1, [[x1_h, y1_h]])[0]
+    p2_h = homography.points_apply_homography(H2, [[x2_h, y2_h]])[0]
+
+    disp_ground = p1_g[0] - p2_g[0]
+    disp_high = p1_h[0] - p2_h[0]
+
+    # For negative unipolar: disp_high should be more negative than disp_ground
+    # i.e. |disp_high| > |disp_ground|, meaning disp_high < disp_ground
+    grows = disp_high < disp_ground
+    logger.info('altitude consistency check: disp_ground=%.2f, disp_high=%.2f, grows=%s',
+                disp_ground, disp_high, grows)
+    return grows
+
+
 def disparity_range_from_matches(matches, H1, H2, disp_range_extra_margin):
     """
     Compute the disparity range of a ROI from a list of point matches.
@@ -363,11 +409,30 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         else:
             if use_dl:
                 t_margin = cfg.get('dl_unipolarity_margin', 50)
-                H2 = register_horizontally_translation(sift_matches, H1, H2,
-                                                       flag='negative',
-                                                       debug=debug)
-                # apply additional margin so all disparities are well below zero
-                H2 = np.dot(common.matrix_translation(-t_margin, 0), H2)
+
+                # First try negative unipolarity
+                H2_neg = register_horizontally_translation(sift_matches, H1, H2,
+                                                           flag='negative',
+                                                           debug=debug)
+                H2_neg = np.dot(common.matrix_translation(-t_margin, 0), H2_neg)
+
+                # Check altitude consistency
+                mean_alt = np.mean(rpc_utils.altitude_range(cfg, rpc1, x, y, w, h))
+                if disparity_grows_with_altitude(H1, H2_neg, rpc1, rpc2,
+                                                 x + w // 2, y + h // 2, mean_alt):
+                    H2 = H2_neg
+                else:
+                    # Flip: use positive unipolarity instead
+                    # The images will be flipped horizontally during warping
+                    logger.info('altitude consistency failed, flipping to positive unipolarity')
+                    H2 = register_horizontally_translation(sift_matches, H1, H2,
+                                                           flag='positive',
+                                                           debug=debug)
+                    H2 = np.dot(common.matrix_translation(t_margin, 0), H2)
+
+                    # Apply horizontal flip to both homographies
+                    # This is done later during image warping by flipping the output
+                    cfg['_dl_flip_images'] = True
             else:
                 H2 = register_horizontally_translation(sift_matches, H1, H2,
                                                        debug=debug)
@@ -398,7 +463,32 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
     np.testing.assert_allclose(np.round([x0, y0]), [hmargin, vmargin], atol=.01)
 
     # apply homographies and do the crops
-    success = homography.image_apply_homography(out1, im1, H1, w0 + 2*hmargin, h0 + 2*vmargin, verbose=debug)
-    success = success and homography.image_apply_homography(out2, im2, H2, w0 + 2*hmargin, h0 + 2*vmargin, verbose=debug)
+    out_w = w0 + 2*hmargin
+    out_h = h0 + 2*vmargin
+    success = homography.image_apply_homography(out1, im1, H1, out_w, out_h, verbose=debug)
+    success = success and homography.image_apply_homography(out2, im2, H2, out_w, out_h, verbose=debug)
+
+    # For DL stereo: if altitude consistency failed, flip rectified images horizontally
+    # and update homographies to account for the flip.
+    if success and use_dl and cfg.get('_dl_flip_images', False):
+        import rasterio
+        for img_path in [out1, out2]:
+            with rasterio.open(img_path, 'r') as src:
+                data = src.read()
+                profile = src.profile.copy()
+            data = data[:, :, ::-1].copy()  # flip horizontally
+            with rasterio.open(img_path, 'w', **profile) as dst:
+                dst.write(data)
+
+        # Update homographies: compose with horizontal flip matrix
+        H_flip = np.array([[-1, 0, out_w - 1], [0, 1, 0], [0, 0, 1]], dtype=float)
+        H1 = np.dot(H_flip, H1)
+        H2 = np.dot(H_flip, H2)
+
+        # Disparity range also flips sign
+        disp_m, disp_M = -disp_M, -disp_m
+
+        cfg.pop('_dl_flip_images', None)
+        logger.info('applied horizontal flip to rectified images')
 
     return H1, H2, disp_m, disp_M, success
