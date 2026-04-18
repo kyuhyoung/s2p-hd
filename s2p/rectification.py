@@ -279,9 +279,12 @@ def disparity_range(cfg, rpc1, rpc2, x, y, w, h, H1, H2, matches, A=None):
     if disp is None:
         disp = -3, 3
 
-    # impose a minimal disparity range (TODO this is valid only with the
-    # 'center' flag for register_horizontally_translation)
-    disp = min(-3, disp[0]), max(3, disp[1])
+    # impose a minimal disparity range (only for center flag, not for DL stereo)
+    if cfg.get('matching_algorithm') != 'dl_stereo':
+        disp = min(-3, disp[0]), max(3, disp[1])
+    else:
+        logging.info("DL stereo: keeping unipolar disparity range [%.1f, %.1f], nearest_to_zero=%.1fpx",
+                      disp[0], disp[1], min(abs(disp[0]), abs(disp[1])))
 
     logging.info("Final disparity range: %s", disp)
     return disp

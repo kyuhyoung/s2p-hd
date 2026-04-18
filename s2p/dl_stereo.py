@@ -291,9 +291,20 @@ def predict_disparity(cfg, model, rect1_path, rect2_path, return_both=False):
     if not return_both:
         return disp
 
-    # Right-to-left (swap images)
-    disp_rl_raw = _run_model(cfg, model, imgR, imgL)
-    disp_rl = -disp_rl_raw
+    # Right-to-left disparity via horizontal flip.
+    # Simply swapping L/R doesn't work because rectification is asymmetric.
+    # Instead: flip both images horizontally, run model, flip result back.
+    # This reverses the disparity direction while keeping the same epipolar geometry.
+    imgL_flip = torch.flip(imgL, dims=[3])  # horizontal flip
+    imgR_flip = torch.flip(imgR, dims=[3])  # horizontal flip
+    disp_rl_raw = _run_model(cfg, model, imgR_flip, imgL_flip)
+    # Flip the disparity map back horizontally
+    disp_rl_raw = np.fliplr(disp_rl_raw)
+    # The flipped model outputs disparity in the opposite direction,
+    # so in s2p convention: disp_rl = disp_rl_raw (same sign as model output, positive)
+    # For L-R check: disp_L(x) + disp_rl(x + disp_L(x)) ≈ 0
+    # disp_L is negative (s2p convention), disp_rl should be positive
+    disp_rl = disp_rl_raw
 
     return disp, disp_rl
 
@@ -364,7 +375,12 @@ def compute_disparity_map(cfg, rect1, rect2, disp_path, mask_path,
 
     # Left-right consistency check (Deep S2P Section 3.4)
     if do_lr_check:
+        n_before = np.isfinite(disp).sum()
         disp = left_right_consistency_check(disp, disp_rl, threshold=lr_threshold)
+        n_after = np.isfinite(disp).sum()
+        logger.info(f'L-R consistency check: {n_before - n_after} pixels rejected '
+                    f'({100 * (n_before - n_after) / max(n_before, 1):.1f}%), '
+                    f'{n_after} remaining')
 
     # Create rejection mask (1 = valid, 0 = rejected)
     mask = np.isfinite(disp).astype(np.uint8)
