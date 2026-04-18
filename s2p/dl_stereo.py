@@ -25,10 +25,11 @@ def _find_diachronicstereo_root():
     if _DIACHRONIC_STEREO_ROOT is not None:
         return _DIACHRONIC_STEREO_ROOT
 
-    # Try common relative locations
+    # Try common relative locations + docker mount
     candidates = [
         Path(__file__).resolve().parent.parent.parent / "diachronicstereo",
         Path(__file__).resolve().parent.parent.parent / "diachronic-stereo",
+        Path("/diachronicstereo"),  # docker mount
     ]
     for c in candidates:
         if (c / "thirdparty" / "__init__.py").exists():
@@ -55,12 +56,27 @@ def _read_rectified_image(path):
     """
     Read a rectified image (GeoTIFF) and return [1, 3, H, W] float32 tensor in [0, 1].
     Single-band images are replicated to 3 channels.
+
+    Note: common.rio_read_as_array_with_nans returns (bands, H, W) or (H, W) after squeeze.
+    We convert to (H, W, C) for processing, then to tensor (1, 3, H, W).
     """
-    arr = common.rio_read_as_array_with_nans(path)
+    import rasterio
+    with rasterio.open(path, 'r') as src:
+        arr = src.read()  # (bands, H, W)
+        nodata_values = src.nodatavals
+    for band, nodata in zip(arr, nodata_values):
+        if nodata is not None:
+            band[band == nodata] = np.nan
+
+    # arr is (bands, H, W) — transpose to (H, W, bands)
+    if arr.ndim == 3:
+        arr = np.transpose(arr, (1, 2, 0))  # (H, W, C)
+    # arr.ndim == 2 means single band already squeezed (shouldn't happen with src.read())
+
     if np.isnan(arr).any():
         arr = np.nan_to_num(arr, nan=0.0)
 
-    # Handle dimensionality
+    # Handle channel count
     if arr.ndim == 2:
         arr = np.repeat(arr[:, :, np.newaxis], 3, axis=2)
     elif arr.ndim == 3 and arr.shape[2] == 1:
@@ -230,7 +246,22 @@ def _predict_foundationstereo(model, imgL, imgR, device):
     return disp
 
 
-def predict_disparity(cfg, model, rect1_path, rect2_path):
+def _run_model(cfg, model, imgL, imgR):
+    """Run a single forward pass of the DL model. Returns raw model disparity (not sign-flipped)."""
+    model_name = cfg['dl_stereo_model']
+    device = cfg['dl_stereo_device']
+
+    if model_name == 'monster':
+        return _predict_monster(model, imgL, imgR, device)
+    elif model_name == 'stereoanywhere':
+        return _predict_stereoanywhere(model, imgL, imgR, device)
+    elif model_name == 'foundationstereo':
+        return _predict_foundationstereo(model, imgL, imgR, device)
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+
+def predict_disparity(cfg, model, rect1_path, rect2_path, return_both=False):
     """
     Run DL stereo inference on a pair of rectified images.
 
@@ -239,32 +270,32 @@ def predict_disparity(cfg, model, rect1_path, rect2_path):
         model: loaded DL model
         rect1_path: path to rectified reference image
         rect2_path: path to rectified secondary image
+        return_both: if True, also return right-to-left disparity
 
     Returns:
         disp: numpy array [H, W] in s2p-hd convention (right_x = left_x + disp)
               Invalid pixels are NaN.
+        disp_rl: (only if return_both=True) right-to-left disparity in s2p-hd convention
     """
-    model_name = cfg['dl_stereo_model']
-    device = cfg['dl_stereo_device']
-
     imgL = _read_rectified_image(rect1_path)
     imgR = _read_rectified_image(rect2_path)
 
-    if model_name == 'monster':
-        disp = _predict_monster(model, imgL, imgR, device)
-    elif model_name == 'stereoanywhere':
-        disp = _predict_stereoanywhere(model, imgL, imgR, device)
-    elif model_name == 'foundationstereo':
-        disp = _predict_foundationstereo(model, imgL, imgR, device)
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
+    # Left-to-right
+    disp_lr_raw = _run_model(cfg, model, imgL, imgR)
 
     # DL models output disp = x_left - x_right (positive, left-to-right convention).
     # s2p-hd expects disp such that right_x = left_x + disp.
     # Therefore: s2p_disp = -model_disp
-    disp = -disp
+    disp = -disp_lr_raw
 
-    return disp
+    if not return_both:
+        return disp
+
+    # Right-to-left (swap images)
+    disp_rl_raw = _run_model(cfg, model, imgR, imgL)
+    disp_rl = -disp_rl_raw
+
+    return disp, disp_rl
 
 
 # --------------- Post-processing ---------------
@@ -315,9 +346,14 @@ def compute_disparity_map(cfg, rect1, rect2, disp_path, mask_path,
         gpu_mem_manager: GPU memory manager (for VRAM coordination)
     """
     border_trim = cfg['dl_border_trim']
+    do_lr_check = cfg.get('dl_lr_check', True)
+    lr_threshold = cfg.get('dl_lr_threshold', 2)
 
-    # Run inference
-    disp = predict_disparity(cfg, model, rect1, rect2)
+    # Run inference (both directions if L-R check enabled)
+    if do_lr_check:
+        disp, disp_rl = predict_disparity(cfg, model, rect1, rect2, return_both=True)
+    else:
+        disp = predict_disparity(cfg, model, rect1, rect2)
 
     # Border trim: invalidate edges (neural aperture problem)
     if border_trim > 0:
@@ -325,6 +361,10 @@ def compute_disparity_map(cfg, rect1, rect2, disp_path, mask_path,
         disp[-border_trim:, :] = np.nan
         disp[:, :border_trim] = np.nan
         disp[:, -border_trim:] = np.nan
+
+    # Left-right consistency check (Deep S2P Section 3.4)
+    if do_lr_check:
+        disp = left_right_consistency_check(disp, disp_rl, threshold=lr_threshold)
 
     # Create rejection mask (1 = valid, 0 = rejected)
     mask = np.isfinite(disp).astype(np.uint8)

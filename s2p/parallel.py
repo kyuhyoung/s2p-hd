@@ -202,6 +202,11 @@ def launch_calls(cfg, fun, list_of_args, nb_workers, *extra_args, tilewise=True,
         pool.join()
 
     else:
+        # In single-process mode, manually call the initializer that
+        # multiprocessing.Pool would normally call in each worker.
+        if init_args:
+            expand_initargs(*init_args)
+
         outputs = []
         for x in list_of_args:
             args = tuple()

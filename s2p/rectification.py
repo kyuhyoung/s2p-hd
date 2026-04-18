@@ -172,9 +172,9 @@ def disparity_grows_with_altitude(H1, H2, rpc1, rpc2, x_center, y_center, alt_gr
     disp_ground = p1_g[0] - p2_g[0]
     disp_high = p1_h[0] - p2_h[0]
 
-    # For negative unipolar: disp_high should be more negative than disp_ground
-    # i.e. |disp_high| > |disp_ground|, meaning disp_high < disp_ground
-    grows = disp_high < disp_ground
+    # Disparity (left_x - right_x) should increase with altitude.
+    # This is the normal geometric relationship for satellite stereo.
+    grows = disp_ground < disp_high
     logger.info('altitude consistency check: disp_ground=%.2f, disp_high=%.2f, grows=%s',
                 disp_ground, disp_high, grows)
     return grows
