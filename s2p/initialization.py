@@ -121,12 +121,15 @@ def check_parameters(cfg, d: dict) -> None:
     d['roi']['w'] = int(np.ceil(d['roi']['w']))
     d['roi']['h'] = int(np.ceil(d['roi']['h']))
 
-    # warn about unknown parameters. The known parameters are those defined in
-    # the global config.cfg dictionary, plus the mandatory 'images' and 'roi'
-    for k in d.keys():
-        if k not in ['images', 'roi', 'roi_geojson']:
-            if k not in cfg:
-                logger.warning('ignoring unknown parameter {}.'.format(k))
+    # Reject unknown parameters. The known parameters are those defined in the
+    # global config.cfg dictionary, plus the mandatory 'images' and 'roi'.
+    # Failing loudly here prevents silent-ignore bugs after config key renames
+    # (e.g. '3d_filtering_r' -> '3d_filtering_radius_gsd') from being masked.
+    unknown = [k for k in d.keys()
+               if k not in ('images', 'roi', 'roi_geojson') and k not in cfg]
+    if unknown:
+        logger.critical('unknown config parameter(s): {}'.format(', '.join(sorted(unknown))))
+        sys.exit(1)
 
 
 def build_cfg(cfg, user_cfg: dict) -> None:
