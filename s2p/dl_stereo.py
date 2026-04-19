@@ -87,15 +87,16 @@ def _read_rectified_image(path):
     elif arr.ndim == 3 and arr.shape[2] > 3:
         arr = arr[:, :, :3]
 
-    # Normalize to [0, 1]
+    # Normalize to [0, 1] using percentile stretch for >8-bit images
+    arr = arr.astype(np.float32)
     vmin, vmax = float(arr.min()), float(arr.max())
-    if vmax > 1.0:
-        if vmax <= 255.0:
-            arr = arr.astype(np.float32) / 255.0
-        else:
-            arr = (arr.astype(np.float32) - vmin) / (vmax - vmin + 1e-12)
-    else:
-        arr = arr.astype(np.float32)
+    if vmax > 255.0:
+        # 16-bit or wider: use 2-98% percentile stretch
+        p2, p98 = np.percentile(arr[arr > 0], [2, 98]) if (arr > 0).any() else (vmin, vmax)
+        arr = np.clip((arr - p2) / (p98 - p2 + 1e-12), 0.0, 1.0)
+    elif vmax > 1.0:
+        arr = arr / 255.0
+    # else: already in [0, 1]
 
     tensor = torch.from_numpy(arr).permute(2, 0, 1).float()
     return tensor.unsqueeze(0)  # [1, 3, H, W]
