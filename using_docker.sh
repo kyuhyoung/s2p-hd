@@ -3,13 +3,14 @@
 # S2P-HD + DL Stereo Matcher Docker Container
 #
 # Usage:
-#   ./using_docker.sh              # build + enter
+#   ./using_docker.sh              # build (with cache) + enter
 #   ./using_docker.sh --no-cache   # rebuild from scratch
+#   ./using_docker.sh --no-build   # skip build, enter existing image
 
 DOCKER_IMAGE="s2p-hd-dl:latest"
 
 # Directory configuration
-dir_data=/raid/HDD/dataset_stereo
+dir_data=/data/kevin_workspace/dataset_stereo
 dir_pretrained=/data/kevin_workspace/pretrained_model
 # dir_diachronic no longer needed (thirdparty/ bundled in s2p-hd)
 
@@ -35,11 +36,17 @@ log "========== $(date '+%Y-%m-%d %H:%M:%S') =========="
 
 # Parse arguments
 NO_CACHE=false
+NO_BUILD=false
 for arg in "$@"; do
     case $arg in
         --no-cache) NO_CACHE=true ;;
+        --no-build) NO_BUILD=true ;;
     esac
 done
+if [ "$NO_CACHE" = true ] && [ "$NO_BUILD" = true ]; then
+    echo "Error: --no-cache and --no-build are mutually exclusive" >&2
+    exit 1
+fi
 
 log "${GREEN}==================================================${NC}"
 log "${GREEN}  S2P-HD + DL Stereo Matcher Docker${NC}"
@@ -160,32 +167,39 @@ check_gdrive \
 
 log "${GREEN}Pretrained models check done${NC}"
 
-# Check Dockerfile exists
-if [ ! -f "${SCRIPT_DIR}/Dockerfile" ]; then
-    log "${RED}Dockerfile not found. Run from s2p-hd repo root.${NC}"
-    exit 1
-fi
-
-# Build
-BUILD_FLAGS=""
-if [ "$NO_CACHE" = true ]; then
-    BUILD_FLAGS="--no-cache"
-    log "${YELLOW}Building (no cache)...${NC}"
+# Build (unless --no-build)
+if [ "$NO_BUILD" = true ]; then
+    if ! sudo docker image inspect ${DOCKER_IMAGE} &>/dev/null; then
+        log "${RED}--no-build set but image ${DOCKER_IMAGE} not found. Drop --no-build or build first.${NC}"
+        exit 1
+    fi
+    log "${YELLOW}Skipping build (--no-build), using existing image ${DOCKER_IMAGE}${NC}"
 else
-    log "${YELLOW}Building...${NC}"
-fi
+    if [ ! -f "${SCRIPT_DIR}/Dockerfile" ]; then
+        log "${RED}Dockerfile not found. Run from s2p-hd repo root.${NC}"
+        exit 1
+    fi
 
-cd "${SCRIPT_DIR}"
-sudo docker build $BUILD_FLAGS -f Dockerfile -t ${DOCKER_IMAGE} . 2>&1 | while IFS= read -r line; do
-    echo "$line"
-    echo "$line" | sed 's/\x1b\[[0-9;]*m//g' >> "$LOGFILE"
-done
+    BUILD_FLAGS=""
+    if [ "$NO_CACHE" = true ]; then
+        BUILD_FLAGS="--no-cache"
+        log "${YELLOW}Building (no cache)...${NC}"
+    else
+        log "${YELLOW}Building...${NC}"
+    fi
 
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
-    log "${RED}Docker build failed${NC}"
-    exit 1
+    cd "${SCRIPT_DIR}"
+    sudo docker build $BUILD_FLAGS -f Dockerfile -t ${DOCKER_IMAGE} . 2>&1 | while IFS= read -r line; do
+        echo "$line"
+        echo "$line" | sed 's/\x1b\[[0-9;]*m//g' >> "$LOGFILE"
+    done
+
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        log "${RED}Docker build failed${NC}"
+        exit 1
+    fi
+    log "${GREEN}Build complete${NC}"
 fi
-log "${GREEN}Build complete${NC}"
 
 log "${YELLOW}Mounts:${NC}"
 log "  Data:          ${dir_data} -> /data"
