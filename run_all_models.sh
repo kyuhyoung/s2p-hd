@@ -39,10 +39,11 @@ fi
 
 cd ${DATA_DIR}
 
-# Configs live in repo (version-controlled). s2p is invoked from DATA_DIR so
-# that relative paths in configs ('images', 'out_dir') resolve against data.
-for model_cfg_name in config_dl_stereo.json config_dl_monster.json config_dl_foundation.json config_dl_stereoanywhere.json; do
-    model_cfg="${CONFIG_DIR}/${model_cfg_name}"
+# s2p resolves relative paths against config file location (not cwd).
+# Copy configs to DATA_DIR so relative image paths resolve correctly.
+for model_cfg_name in config_sgm.json config_dl_stereo.json config_dl_monster.json config_dl_foundation.json config_dl_stereoanywhere.json; do
+    cp "${CONFIG_DIR}/${model_cfg_name}" "${DATA_DIR}/${model_cfg_name}"
+    model_cfg="${DATA_DIR}/${model_cfg_name}"
     model_name=$(python3 -c "import json; d=json.load(open('${model_cfg}')); print(d.get('dl_stereo_model','?') + ' (' + d['out_dir'] + ')')")
     out_dir=$(python3 -c "import json; print(json.load(open('${model_cfg}'))['out_dir'])")
 
@@ -50,6 +51,7 @@ for model_cfg_name in config_dl_stereo.json config_dl_monster.json config_dl_fou
     log "${GREEN}=== Running: ${model_name} ===${NC}"
     rm -rf "${out_dir}"
     s2p "${model_cfg}" 2>&1 | stdbuf -oL tee -a "$LOGFILE"
+    rm -f "${model_cfg}"  # cleanup copied config
     log "${GREEN}=== Done: ${model_name} ===${NC}"
 done
 
