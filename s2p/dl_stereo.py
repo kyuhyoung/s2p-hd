@@ -19,31 +19,34 @@ logger = logging.getLogger(__name__)
 _DIACHRONIC_STEREO_ROOT = None
 
 
-def _find_diachronicstereo_root():
-    """Locate the diachronicstereo repo relative to s2p-hd."""
+def _find_thirdparty_root():
+    """Locate the directory containing thirdparty/."""
     global _DIACHRONIC_STEREO_ROOT
     if _DIACHRONIC_STEREO_ROOT is not None:
         return _DIACHRONIC_STEREO_ROOT
 
-    # Try common relative locations + docker mount
-    candidates = [
+    # s2p-hd/thirdparty/ (bundled) → root is s2p-hd/
+    bundled = Path(__file__).resolve().parent.parent / "thirdparty"
+    if (bundled / "__init__.py").exists():
+        _DIACHRONIC_STEREO_ROOT = bundled.parent
+        return _DIACHRONIC_STEREO_ROOT
+
+    # External fallbacks
+    for c in [
         Path(__file__).resolve().parent.parent.parent / "diachronicstereo",
-        Path(__file__).resolve().parent.parent.parent / "diachronic-stereo",
-        Path("/diachronicstereo"),  # docker mount
-    ]
-    for c in candidates:
+        Path("/diachronicstereo"),
+    ]:
         if (c / "thirdparty" / "__init__.py").exists():
             _DIACHRONIC_STEREO_ROOT = c
-            return c
+            return _DIACHRONIC_STEREO_ROOT
 
     raise FileNotFoundError(
-        "Cannot find diachronicstereo repo. Expected it next to s2p-hd directory. "
-        "Searched: " + ", ".join(str(c) for c in candidates)
+        "Cannot find thirdparty/. Expected at s2p-hd/thirdparty/ or adjacent diachronicstereo/"
     )
 
 
 def _ensure_thirdparty_on_path():
-    root = _find_diachronicstereo_root()
+    root = _find_thirdparty_root()
     tp = str(root)
     if tp not in sys.path:
         sys.path.insert(0, tp)

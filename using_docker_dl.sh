@@ -11,7 +11,7 @@ DOCKER_IMAGE="s2p-hd-dl:latest"
 # Directory configuration
 dir_data=/raid/HDD/dataset_stereo
 dir_pretrained=/raid/HDD/kevin_workspace/pretrained_model
-dir_diachronic=/raid/HDD/kevin_workspace/etc/diachronicstereo
+# dir_diachronic no longer needed (thirdparty/ bundled in s2p-hd)
 
 # Log file (same folder as script, overwritten each run)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -75,7 +75,6 @@ log "${GREEN}Build complete${NC}"
 log "${YELLOW}Mounts:${NC}"
 log "  Data:          ${dir_data} -> /data"
 log "  Pretrained:    ${dir_pretrained} -> /pretrained"
-log "  Diachronic:    ${dir_diachronic} -> /diachronicstereo"
 log "  s2p-hd:        ${SCRIPT_DIR} -> /workspace"
 log ""
 log "${GREEN}Entering container...${NC}"
@@ -92,6 +91,5 @@ sudo docker run --rm -it \
     -v ${SCRIPT_DIR}:/workspace \
     -v ${dir_data}:/data \
     -v ${dir_pretrained}:/pretrained \
-    -v ${dir_diachronic}:/diachronicstereo \
     ${DOCKER_IMAGE} \
     bash
