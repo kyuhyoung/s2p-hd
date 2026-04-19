@@ -44,7 +44,7 @@ done
 # ============================================================
 log ""
 log "${YELLOW}[2/5] Check pretrained models...${NC}"
-dir_pretrained=/raid/HDD/kevin_workspace/pretrained_model
+dir_pretrained=/data/kevin_workspace/pretrained_model
 for f in diachronic-stereo/final.pth monster/mix_all.pth Depth-Anything-V2-Large/depth_anything_v2_vitl.pth stereoanywhere/stereoanywhere_sceneflow.pth foundationstereo/23-51-11/model_best_bp2.pth; do
     if [ -f "${dir_pretrained}/$f" ]; then
         log "  ✓ $f"

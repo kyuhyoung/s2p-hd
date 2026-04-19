@@ -10,7 +10,7 @@ DOCKER_IMAGE="s2p-hd-dl:latest"
 
 # Directory configuration
 dir_data=/raid/HDD/dataset_stereo
-dir_pretrained=/raid/HDD/kevin_workspace/pretrained_model
+dir_pretrained=/data/kevin_workspace/pretrained_model
 # dir_diachronic no longer needed (thirdparty/ bundled in s2p-hd)
 
 # Log file (same folder as script, overwritten each run)
@@ -79,17 +79,43 @@ download_hf() {
     fi
 }
 
-# check_manual: for checkpoints that cannot be wget'd (Google Drive, auth-gated,
-# license-accept, etc.). Prints manual download instructions if missing.
-check_manual() {
-    local dst="$1" name="$2" source_url="$3" extra_hint="$4"
+# ensure_gdown: install gdown on host (system pip, running under sudo) if missing.
+ensure_gdown() {
+    command -v gdown &>/dev/null && return 0
+    log "${YELLOW}  Installing gdown (one-time)...${NC}"
+    pip3 install --quiet gdown 2>&1 | tee -a "$LOGFILE"
+    command -v gdown &>/dev/null
+}
+
+# check_gdrive: download a specific file from Google Drive via gdown.
+# Use this for checkpoints hosted on Google Drive (virus-scan gated, not wget'able).
+#   $1 dst           — final file path
+#   $2 name          — display name
+#   $3 file_id       — Google Drive file ID (NOT folder ID)
+#   $4 fallback_url  — manual download URL shown if gdown fails
+check_gdrive() {
+    local dst="$1" name="$2" file_id="$3" fallback_url="$4"
     if [ -f "$dst" ] && [ -s "$dst" ]; then
         log "  ${name}: already exists"
-    else
-        log "${YELLOW}  ${name}: not found. Download manually from:${NC}"
-        log "    ${source_url}"
-        [ -n "$extra_hint" ] && log "    ${extra_hint}"
+        return 0
     fi
+    if ! ensure_gdown; then
+        log "${RED}  ${name}: gdown unavailable. Download manually from:${NC}"
+        [ -n "$fallback_url" ] && log "    ${fallback_url}"
+        return 1
+    fi
+    [ -f "$dst" ] && rm -f "$dst"
+    mkdir -p "$(dirname "$dst")"
+    log "  ${name}: downloading from Google Drive..."
+    gdown --id "$file_id" -O "$dst" 2>&1 | tee -a "$LOGFILE"
+    local rc=${PIPESTATUS[0]}
+    if [ $rc -ne 0 ] || [ ! -s "$dst" ]; then
+        log "${RED}  ${name}: gdown failed (exit=$rc). Download manually from:${NC}"
+        [ -n "$fallback_url" ] && log "    ${fallback_url}"
+        rm -f "$dst"
+        return 1
+    fi
+    log "  ${name}: done ($(du -h "$dst" | cut -f1))"
 }
 
 # Diachronic MonSter (satellite fine-tuned)
@@ -110,19 +136,27 @@ download_hf \
     "${dir_pretrained}/Depth-Anything-V2-Large/depth_anything_v2_vitl.pth" \
     "Depth Anything V2 Large"
 
-# StereoAnywhere (Google Drive only — no stable HTTP URL)
-check_manual \
+# StereoAnywhere (CC BY-NC-SA 4.0, Univ. of Bologna)
+# Folder: https://drive.google.com/drive/folders/1uQqNJo2iWoPtXlSsv2koAt2OPYHpuh1x
+check_gdrive \
     "${dir_pretrained}/stereoanywhere/stereoanywhere_sceneflow.pth" \
-    "StereoAnywhere" \
-    "https://drive.google.com/drive/folders/1uQqNJo2iWoPtXlSsv2koAt2OPYHpuh1x" \
-    "Place sceneflow checkpoint as stereoanywhere_sceneflow.pth in ${dir_pretrained}/stereoanywhere/"
+    "StereoAnywhere (sceneflow)" \
+    "11jYAFvSXNwaePwvAmrAGDJkluhqaP79J" \
+    "https://drive.google.com/drive/folders/1uQqNJo2iWoPtXlSsv2koAt2OPYHpuh1x"
 
-# FoundationStereo (Google Drive only — no stable HTTP URL)
-check_manual \
+# FoundationStereo 23-51-11 (NVIDIA non-commercial license)
+# Folder: https://drive.google.com/drive/folders/1VhPebc_mMxWKccrv7pdQLTvXYVcLYpsf
+check_gdrive \
     "${dir_pretrained}/foundationstereo/23-51-11/model_best_bp2.pth" \
-    "FoundationStereo" \
-    "https://drive.google.com/drive/folders/1VhPebc_mMxWKccrv7pdQLTvXYVcLYpsf" \
-    "Place model_best_bp2.pth and cfg.yaml in ${dir_pretrained}/foundationstereo/23-51-11/"
+    "FoundationStereo 23-51-11 model" \
+    "1Yh_2o9QCUrVqZrnAXZ7RUr0zTp3JrMKe" \
+    "https://drive.google.com/drive/folders/1VhPebc_mMxWKccrv7pdQLTvXYVcLYpsf"
+
+check_gdrive \
+    "${dir_pretrained}/foundationstereo/23-51-11/cfg.yaml" \
+    "FoundationStereo 23-51-11 cfg" \
+    "1tidGICH1_kTUUqi42aboKscuMY4IK_Xr" \
+    "https://drive.google.com/drive/folders/1VhPebc_mMxWKccrv7pdQLTvXYVcLYpsf"
 
 log "${GREEN}Pretrained models check done${NC}"
 
