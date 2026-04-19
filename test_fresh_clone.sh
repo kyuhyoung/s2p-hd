@@ -154,7 +154,7 @@ with rasterio.open(\"${DATA}/s2p_out_clone_test/dsm.tif\") as f:
 # ============================================================
 log ""
 log "${YELLOW}Cleaning up test directory...${NC}"
-rm -rf ${TEST_DIR}
+sudo rm -rf ${TEST_DIR}
 
 log ""
 log "${GREEN}==================================================${NC}"
