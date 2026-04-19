@@ -13,6 +13,28 @@ import subprocess
 import numpy as np
 import rasterio
 from scipy import ndimage
+
+
+def to_grayscale(arr):
+    """
+    Convert a multi-band image to grayscale using luminance weights.
+
+    Args:
+        arr: numpy array, either 2D (H, W) already grayscale,
+             or 3D (bands, H, W) from rasterio.read().
+
+    Returns:
+        2D numpy array (H, W) in float32.
+    """
+    if arr.ndim == 2:
+        return arr.astype(np.float32)
+    if arr.shape[0] == 1:
+        return arr[0].astype(np.float32)
+    if arr.shape[0] >= 3:
+        # ITU-R BT.601 luminance: 0.299*R + 0.587*G + 0.114*B
+        return (0.299 * arr[0] + 0.587 * arr[1] + 0.114 * arr[2]).astype(np.float32)
+    # 2-band fallback: use first band
+    return arr[0].astype(np.float32)
 from typing import Optional
 
 logger = logging.getLogger()

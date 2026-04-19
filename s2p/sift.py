@@ -122,8 +122,9 @@ def image_keypoints(im, x, y, w, h, max_nb=None, thresh_dog=0.0133, nb_octaves=8
         h = min(h, ds.height - y)
         in_buffer = ds.read(window=rio.windows.Window(x, y, w, h))
 
-    # Detect keypoints on first band
-    keypoints = keypoints_from_nparray(in_buffer[0], thresh_dog=thresh_dog,
+    # Detect keypoints on grayscale (luminance if multi-band)
+    from s2p.common import to_grayscale
+    keypoints = keypoints_from_nparray(to_grayscale(in_buffer), thresh_dog=thresh_dog,
                                        nb_octaves=nb_octaves,
                                        nb_scales=nb_scales, offset=(x, y))
 
@@ -331,18 +332,18 @@ def image_keypoints_cv(im, x, y, w, h, max_nb=None, thresh_dog=0.0133, nb_octave
         h = min(h, ds.height - y)
         in_buffer = ds.read(window=rio.windows.Window(x, y, w, h))
 
-    # raise an exception if the image is flat (min=max) it has no sift points and will break the pipeline downstream 
-    if np.max(in_buffer[0]) == np.min(in_buffer[0]) :
-        raise Exception("The current image has no content: aborting") 
+    # Convert to grayscale (luminance if multi-band)
+    from s2p.common import to_grayscale
+    gray = to_grayscale(in_buffer)
+
+    # raise an exception if the image is flat (min=max) it has no sift points and will break the pipeline downstream
+    if np.max(gray) == np.min(gray):
+        raise Exception("The current image has no content: aborting")
 
     from s2p import common
-#    im_adjusted = common.linear_stretching_and_quantization_8bit ( in_buffer[0].astype(float) - cv.GaussianBlur( in_buffer[0].astype(float), (11,11), 0 ) , 0.1)
-    im_adjusted = common.linear_stretching_and_quantization_8bit (in_buffer[0], 0.1)
+    im_adjusted = common.linear_stretching_and_quantization_8bit(gray, 0.1)
 
-##   debug
-#    common.rasterio_write('/tmp/sift.tif', im_adjusted )
-
-    # Detect keypoints on first band
+    # Detect keypoints on grayscale
     SIFT = cv.SIFT_create()
     kp1, des1 = SIFT.detectAndCompute(im_adjusted, None)
 

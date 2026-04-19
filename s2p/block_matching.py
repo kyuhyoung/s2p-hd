@@ -40,11 +40,9 @@ def create_rejection_mask(disp, im1, im2, mask):
     im2 = common.rio_read_as_array_with_nans(im2)
     disp= common.rio_read_as_array_with_nans(disp)
 
-    # ensure 2D (use first band if multi-band)
-    if im1.ndim == 3:
-        im1 = im1[0]
-    if im2.ndim == 3:
-        im2 = im2[0]
+    # ensure 2D (luminance conversion if multi-band)
+    im1 = common.to_grayscale(im1)
+    im2 = common.to_grayscale(im2)
     if disp.ndim == 3:
         disp = disp[0]
 
