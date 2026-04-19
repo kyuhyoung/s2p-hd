@@ -29,5 +29,5 @@
   "dl_border_trim": 32,
   "dl_lr_threshold": 2,
   "dl_unipolarity_margin": 50,
-  "dl_deterministic": true
+  "dl_deterministic": false
 }
