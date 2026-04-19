@@ -3,8 +3,8 @@
 # S2P-HD + DL Stereo Matcher Docker Container
 #
 # Usage:
-#   ./using_docker_dl.sh              # build + enter
-#   ./using_docker_dl.sh --no-cache   # rebuild from scratch
+#   ./using_docker.sh              # build + enter
+#   ./using_docker.sh --no-cache   # rebuild from scratch
 
 DOCKER_IMAGE="s2p-hd-dl:latest"
 
@@ -15,7 +15,7 @@ dir_pretrained=/raid/HDD/kevin_workspace/pretrained_model
 
 # Log file (same folder as script, overwritten each run)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOGFILE="${SCRIPT_DIR}/using_docker_dl.log"
+LOGFILE="${SCRIPT_DIR}/using_docker.log"
 
 # Colors
 GREEN='\033[0;32m'
@@ -46,8 +46,8 @@ log "${GREEN}  S2P-HD + DL Stereo Matcher Docker${NC}"
 log "${GREEN}==================================================${NC}"
 
 # Check Dockerfile exists
-if [ ! -f "${SCRIPT_DIR}/Dockerfile.dl_stereo" ]; then
-    log "${RED}Dockerfile.dl_stereo not found. Run from s2p-hd repo root.${NC}"
+if [ ! -f "${SCRIPT_DIR}/Dockerfile" ]; then
+    log "${RED}Dockerfile not found. Run from s2p-hd repo root.${NC}"
     exit 1
 fi
 
@@ -61,7 +61,7 @@ else
 fi
 
 cd "${SCRIPT_DIR}"
-sudo docker build $BUILD_FLAGS -f Dockerfile.dl_stereo -t ${DOCKER_IMAGE} . 2>&1 | while IFS= read -r line; do
+sudo docker build $BUILD_FLAGS -f Dockerfile -t ${DOCKER_IMAGE} . 2>&1 | while IFS= read -r line; do
     echo "$line"
     echo "$line" | sed 's/\x1b\[[0-9;]*m//g' >> "$LOGFILE"
 done
