@@ -122,6 +122,27 @@ def _unpad(x, pad):
 
 _loaded_model = None
 _loaded_model_name = None
+_deterministic_applied = False
+
+
+def _apply_deterministic_mode():
+    """Force cuDNN deterministic algorithms. Slower but byte-reproducible
+    across identical Docker images on the same GPU architecture.
+    Applied once per process."""
+    global _deterministic_applied
+    if _deterministic_applied:
+        return
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    # CUBLAS needs this env var for determinism on some ops
+    import os
+    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(0)
+    logger.info('DL stereo: deterministic mode enabled (cudnn.deterministic=True)')
+    _deterministic_applied = True
 
 
 def load_model(cfg):
@@ -135,6 +156,9 @@ def load_model(cfg):
     ckpt = cfg['dl_stereo_ckpt']
     device = cfg['dl_stereo_device']
     dav2_path = cfg.get('dl_depth_anything_v2_path')
+
+    if cfg.get('dl_deterministic', False):
+        _apply_deterministic_mode()
 
     if _loaded_model is not None and _loaded_model_name == model_name:
         return _loaded_model

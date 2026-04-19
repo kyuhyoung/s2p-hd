@@ -1,23 +1,26 @@
 {
-  "out_dir" : "./s2p_out_dl_stereoanywhere",
-  "images" : [
-    {"img" : "JAX_214_005_RGB.tif"},
-    {"img" : "JAX_214_006_RGB.tif"}
-    ],
-  "roi" : {
-      "x" : 0,
-      "y" : 0,
-      "w" : 2000,
-      "h" : 2000
+  "out_dir": "./s2p_out_dl_stereoanywhere",
+  "images": [
+    {
+      "img": "JAX_214_005_RGB.tif"
+    },
+    {
+      "img": "JAX_214_006_RGB.tif"
+    }
+  ],
+  "roi": {
+    "x": 0,
+    "y": 0,
+    "w": 2000,
+    "h": 2000
   },
   "horizontal_margin": 20,
   "vertical_margin": 5,
-  "tile_size" : 1000,
-  "disp_range_method" : "sift",
+  "tile_size": 1000,
+  "disp_range_method": "sift",
   "msk_erosion": 0,
   "dsm_resolution": 0.5,
   "max_processes": 1,
-
   "matching_algorithm": "dl_stereo",
   "dl_stereo_model": "stereoanywhere",
   "dl_stereo_ckpt": "/pretrained/stereoanywhere/stereoanywhere_sceneflow.pth",
@@ -25,5 +28,6 @@
   "dl_stereo_device": "cuda:0",
   "dl_border_trim": 32,
   "dl_lr_threshold": 2,
-  "dl_unipolarity_margin": 50
+  "dl_unipolarity_margin": 50,
+  "dl_deterministic": true
 }

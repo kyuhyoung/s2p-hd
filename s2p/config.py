@@ -168,6 +168,8 @@ def get_default_config() -> dict:
     cfg['dl_lr_check'] = True           # left-right consistency check
     cfg['dl_lr_threshold'] = 2          # left-right consistency threshold in pixels
     cfg['dl_unipolarity_margin'] = 50   # disparity margin for unipolarity enforcement
+    cfg['dl_deterministic'] = False     # enable torch deterministic mode (slower; use when
+                                        # comparing runs across PCs / GPUs)
 
     # this option allows to refine the disparity computed by the fast stereosgm_gpu 
     # it only works in combination with  cfg['matching_algorithm'] = 'stereosgm_gpu'
