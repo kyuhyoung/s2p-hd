@@ -6,6 +6,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="${SCRIPT_DIR}/run_foundation.log"
 DATA_DIR=/data/satellite/jax/jax_214_all_ba_including_config
+CONFIG_DIR=${SCRIPT_DIR}/configs/jax_214
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -23,7 +24,7 @@ log "========== $(date '+%Y-%m-%d %H:%M:%S') =========="
 log "${YELLOW}[1/2] Running FoundationStereo...${NC}"
 cd ${DATA_DIR}
 rm -rf s2p_out_dl_foundation
-s2p config_dl_foundation.json 2>&1 | stdbuf -oL tee -a "$LOGFILE"
+s2p ${CONFIG_DIR}/config_dl_foundation.json 2>&1 | stdbuf -oL tee -a "$LOGFILE"
 log "${GREEN}Done${NC}"
 
 # Compare all 4 models against GT

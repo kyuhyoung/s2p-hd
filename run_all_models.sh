@@ -2,10 +2,17 @@
 
 # Run all DL stereo models and compare against GT
 # Run inside docker container: bash run_all_models.sh
+#
+# GPU selection: defaults to GPU 7. Override via env var:
+#   CUDA_VISIBLE_DEVICES=1 bash run_all_models.sh
+
+: "${CUDA_VISIBLE_DEVICES:=7}"
+export CUDA_VISIBLE_DEVICES
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="${SCRIPT_DIR}/run_all_models.log"
 DATA_DIR=/data/satellite/jax/jax_214_all_ba_including_config
+CONFIG_DIR=${SCRIPT_DIR}/configs/jax_214
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -17,6 +24,8 @@ NC='\033[0m'
 log() {
     echo -e "$1" | stdbuf -oL tee -a "$LOGFILE"
 }
+
+log "${GREEN}CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}${NC}"
 
 # Ensure s2p-hd installed from /workspace (rebuild C binaries if needed)
 if ! python3 -c "import s2p" 2>/dev/null; then
@@ -30,8 +39,10 @@ fi
 
 cd ${DATA_DIR}
 
-# Run each model
-for model_cfg in config_dl_stereo.json config_dl_monster.json config_dl_foundation.json config_dl_stereoanywhere.json; do
+# Configs live in repo (version-controlled). s2p is invoked from DATA_DIR so
+# that relative paths in configs ('images', 'out_dir') resolve against data.
+for model_cfg_name in config_dl_stereo.json config_dl_monster.json config_dl_foundation.json config_dl_stereoanywhere.json; do
+    model_cfg="${CONFIG_DIR}/${model_cfg_name}"
     model_name=$(python3 -c "import json; d=json.load(open('${model_cfg}')); print(d.get('dl_stereo_model','?') + ' (' + d['out_dir'] + ')')")
     out_dir=$(python3 -c "import json; print(json.load(open('${model_cfg}'))['out_dir'])")
 

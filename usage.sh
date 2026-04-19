@@ -20,6 +20,7 @@ log ""
 log "========== $(date '+%Y-%m-%d %H:%M:%S') =========="
 
 DATA_DIR=/data/satellite/jax/jax_214_all_ba_including_config
+CONFIG_DIR="$(cd "$(dirname "$0")" && pwd)/configs/jax_214"
 
 log "${GREEN}==================================================${NC}"
 log "${GREEN}  S2P-HD DL Stereo Matcher Test${NC}"
@@ -69,7 +70,7 @@ log "${GREEN}Smoke test passed${NC}"
 # ============================================================
 log "${YELLOW}[2/3] Running s2p with DL stereo matcher...${NC}"
 log "  Data dir: ${DATA_DIR}"
-log "  Config:   config_dl_stereo.json"
+log "  Config:   ${CONFIG_DIR}/config_dl_stereo.json"
 log "  Output:   ${DATA_DIR}/s2p_out_dl/"
 
 # Clean previous output to force fresh run
@@ -77,7 +78,7 @@ rm -rf ${DATA_DIR}/s2p_out_dl
 log "  Cleaned previous output"
 
 cd ${DATA_DIR}
-s2p config_dl_stereo.json 2>&1 | while IFS= read -r line; do
+s2p ${CONFIG_DIR}/config_dl_stereo.json 2>&1 | while IFS= read -r line; do
     echo "$line"
     echo "$line" | sed 's/\x1b\[[0-9;]*m//g' >> "$LOGFILE"
 done
