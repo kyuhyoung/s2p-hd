@@ -45,6 +45,68 @@ log "${GREEN}==================================================${NC}"
 log "${GREEN}  S2P-HD + DL Stereo Matcher Docker${NC}"
 log "${GREEN}==================================================${NC}"
 
+# ============================================================
+# Check and download pretrained models if missing
+# ============================================================
+log "${YELLOW}Checking pretrained models...${NC}"
+mkdir -p "${dir_pretrained}/diachronic-stereo"
+mkdir -p "${dir_pretrained}/monster"
+mkdir -p "${dir_pretrained}/foundationstereo/23-51-11"
+mkdir -p "${dir_pretrained}/foundationstereo/11-33-40"
+mkdir -p "${dir_pretrained}/stereoanywhere"
+mkdir -p "${dir_pretrained}/Depth-Anything-V2-Large"
+
+download_hf() {
+    local url="$1" dst="$2" name="$3"
+    if [ -f "$dst" ]; then
+        log "  ${name}: already exists"
+    else
+        log "  ${name}: downloading..."
+        wget -q --show-progress -O "$dst" "$url" 2>&1 | tee -a "$LOGFILE"
+        if [ $? -ne 0 ]; then
+            log "${RED}  ${name}: download failed${NC}"
+            rm -f "$dst"
+        else
+            log "  ${name}: done ($(du -h "$dst" | cut -f1))"
+        fi
+    fi
+}
+
+# Diachronic MonSter (satellite fine-tuned)
+download_hf \
+    "https://huggingface.co/emasquil/diachronic-stereo/resolve/main/final.pth" \
+    "${dir_pretrained}/diachronic-stereo/final.pth" \
+    "Diachronic MonSter"
+
+# MonSter original
+download_hf \
+    "https://huggingface.co/cjd24/MonSter/resolve/main/mix_all.pth" \
+    "${dir_pretrained}/monster/mix_all.pth" \
+    "MonSter (mix_all)"
+
+# Depth Anything V2 Large
+download_hf \
+    "https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/depth_anything_v2_vitl.pth" \
+    "${dir_pretrained}/Depth-Anything-V2-Large/depth_anything_v2_vitl.pth" \
+    "Depth Anything V2 Large"
+
+# StereoAnywhere
+download_hf \
+    "https://huggingface.co/emasquil/diachronic-stereo/resolve/main/stereoanywhere_sceneflow.pth" \
+    "${dir_pretrained}/stereoanywhere/stereoanywhere_sceneflow.pth" \
+    "StereoAnywhere"
+
+# FoundationStereo (large model) - Google Drive, manual download needed
+if [ ! -f "${dir_pretrained}/foundationstereo/23-51-11/model_best_bp2.pth" ]; then
+    log "${YELLOW}  FoundationStereo: not found. Download manually from:${NC}"
+    log "    https://drive.google.com/drive/folders/1VhPebc_mMxWKccrv7pdQLTvXYVcLYpsf"
+    log "    Place model_best_bp2.pth and cfg.yaml in ${dir_pretrained}/foundationstereo/23-51-11/"
+else
+    log "  FoundationStereo: already exists"
+fi
+
+log "${GREEN}Pretrained models check done${NC}"
+
 # Check Dockerfile exists
 if [ ! -f "${SCRIPT_DIR}/Dockerfile" ]; then
     log "${RED}Dockerfile not found. Run from s2p-hd repo root.${NC}"
