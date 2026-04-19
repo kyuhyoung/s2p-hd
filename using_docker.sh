@@ -56,19 +56,39 @@ mkdir -p "${dir_pretrained}/foundationstereo/11-33-40"
 mkdir -p "${dir_pretrained}/stereoanywhere"
 mkdir -p "${dir_pretrained}/Depth-Anything-V2-Large"
 
+# download_hf: for checkpoints with a direct HTTP-fetchable URL (e.g. HuggingFace
+# resolve links). Only pass URLs that are verified to return the actual file
+# over wget — never a Google Drive folder / HTML gateway.
 download_hf() {
     local url="$1" dst="$2" name="$3"
-    if [ -f "$dst" ]; then
+    if [ -f "$dst" ] && [ -s "$dst" ]; then
         log "  ${name}: already exists"
     else
+        [ -f "$dst" ] && rm -f "$dst"
         log "  ${name}: downloading..."
-        wget -q --show-progress -O "$dst" "$url" 2>&1 | tee -a "$LOGFILE"
-        if [ $? -ne 0 ]; then
-            log "${RED}  ${name}: download failed${NC}"
+        wget -nv --show-progress -O "$dst" "$url" 2>&1 | tee -a "$LOGFILE"
+        local rc=${PIPESTATUS[0]}
+        if [ $rc -ne 0 ] || [ ! -s "$dst" ]; then
+            log "${RED}  ${name}: download failed (exit=$rc, size=$(stat -c%s "$dst" 2>/dev/null || echo 0))${NC}"
+            log "${RED}    URL: ${url}${NC}"
             rm -f "$dst"
+            return 1
         else
             log "  ${name}: done ($(du -h "$dst" | cut -f1))"
         fi
+    fi
+}
+
+# check_manual: for checkpoints that cannot be wget'd (Google Drive, auth-gated,
+# license-accept, etc.). Prints manual download instructions if missing.
+check_manual() {
+    local dst="$1" name="$2" source_url="$3" extra_hint="$4"
+    if [ -f "$dst" ] && [ -s "$dst" ]; then
+        log "  ${name}: already exists"
+    else
+        log "${YELLOW}  ${name}: not found. Download manually from:${NC}"
+        log "    ${source_url}"
+        [ -n "$extra_hint" ] && log "    ${extra_hint}"
     fi
 }
 
@@ -90,20 +110,19 @@ download_hf \
     "${dir_pretrained}/Depth-Anything-V2-Large/depth_anything_v2_vitl.pth" \
     "Depth Anything V2 Large"
 
-# StereoAnywhere
-download_hf \
-    "https://huggingface.co/emasquil/diachronic-stereo/resolve/main/stereoanywhere_sceneflow.pth" \
+# StereoAnywhere (Google Drive only — no stable HTTP URL)
+check_manual \
     "${dir_pretrained}/stereoanywhere/stereoanywhere_sceneflow.pth" \
-    "StereoAnywhere"
+    "StereoAnywhere" \
+    "https://drive.google.com/drive/folders/1uQqNJo2iWoPtXlSsv2koAt2OPYHpuh1x" \
+    "Place sceneflow checkpoint as stereoanywhere_sceneflow.pth in ${dir_pretrained}/stereoanywhere/"
 
-# FoundationStereo (large model) - Google Drive, manual download needed
-if [ ! -f "${dir_pretrained}/foundationstereo/23-51-11/model_best_bp2.pth" ]; then
-    log "${YELLOW}  FoundationStereo: not found. Download manually from:${NC}"
-    log "    https://drive.google.com/drive/folders/1VhPebc_mMxWKccrv7pdQLTvXYVcLYpsf"
-    log "    Place model_best_bp2.pth and cfg.yaml in ${dir_pretrained}/foundationstereo/23-51-11/"
-else
-    log "  FoundationStereo: already exists"
-fi
+# FoundationStereo (Google Drive only — no stable HTTP URL)
+check_manual \
+    "${dir_pretrained}/foundationstereo/23-51-11/model_best_bp2.pth" \
+    "FoundationStereo" \
+    "https://drive.google.com/drive/folders/1VhPebc_mMxWKccrv7pdQLTvXYVcLYpsf" \
+    "Place model_best_bp2.pth and cfg.yaml in ${dir_pretrained}/foundationstereo/23-51-11/"
 
 log "${GREEN}Pretrained models check done${NC}"
 
