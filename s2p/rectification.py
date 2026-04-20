@@ -49,36 +49,52 @@ def _reset_dl_global_flip_decision():
     _dl_h_tile_cache.clear()
 
 
-def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
-                                  tile_w, tile_h,
-                                  neighbor_radius_tiles=1, self_weight=0.4):
-    """Blend this tile's local (H1, H2) with already-cached neighbor tiles'.
+def _correspondence_smooth_single_h(H_local, tile_x, tile_y, tile_w, tile_h,
+                                    neighbor_radius_tiles=1, self_weight=0.4,
+                                    grid_n=5):
+    """Correspondence-based smoothing of a single rectification H.
 
-    Smooths only the 2x2 upper-left block (rotation/scale/shear -- the
-    pushbroom-induced variation we want to regularize) and the projective
-    row. The translation column [tx, ty] is KEPT per-tile: each tile's H
-    encodes its origin offset, so averaging translations across tiles
-    would invalidate the tile's ROI-to-origin mapping and break the
-    assert_allclose check in rectify_pair.
+    This is the right mathematical tool for averaging projective
+    transforms (Begelfor & Werman 2005 style): sample a grid of points,
+    apply each candidate H to produce target displacements, blend the
+    target displacements, then recover the smoothed H via DLT from the
+    (grid, blended target) pairs.
 
-    MVP of the "continuous H field" idea: adjacent tiles produce nearly
-    identical rectifications at their shared boundary. A true two-pass
-    version (precompute all H, smooth grid, warp) would also smooth
-    translations with the right per-tile renormalization, at the cost of
-    pipeline restructuring.
+    To keep each tile's per-tile translation intact, targets are centered
+    on each tile's own center-target before averaging and recentered on
+    the LOCAL tile's center-target before DLT. So the "shape" part of H
+    (rotation, scale, shear, projective row) is blended across neighbors
+    while the translation column that maps this tile's ROI origin to its
+    rectified origin is preserved.
 
-    Returns (H1_smooth, H2_smooth). If no neighbor is cached yet, returns
-    the local pair unchanged.
+    Returns the smoothed H, or H_local unchanged if no neighbor is
+    cached yet or DLT fails.
     """
     if not _dl_h_tile_cache:
-        return H1_local, H2_local
+        return H_local
+
+    try:
+        import cv2
+    except ImportError:
+        logger.warning('cv2 not available; falling back to no smoothing')
+        return H_local
+
+    # Local tile grid in absolute image coordinates.
+    u = np.linspace(0, 1, grid_n)
+    v = np.linspace(0, 1, grid_n)
+    uu, vv = np.meshgrid(u, v)
+    G_local = np.stack([tile_x + uu.ravel() * tile_w,
+                        tile_y + vv.ravel() * tile_h], axis=1).astype(np.float32)
+    c_local = np.array([[tile_x + tile_w / 2.0, tile_y + tile_h / 2.0]],
+                       dtype=np.float32)
+
+    T_local = cv2.perspectiveTransform(G_local[None], H_local)[0]
+    cT_local = cv2.perspectiveTransform(c_local[None], H_local)[0, 0]
+    C_local = T_local - cT_local
 
     r = neighbor_radius_tiles
+    C_nbr_accum = np.zeros_like(C_local)
     weights_sum = 0.0
-    upper_accum_1 = np.zeros((2, 2), dtype=float)
-    upper_accum_2 = np.zeros((2, 2), dtype=float)
-    proj_accum_1 = np.zeros(2, dtype=float)
-    proj_accum_2 = np.zeros(2, dtype=float)
     for dx in range(-r, r + 1):
         for dy in range(-r, r + 1):
             if dx == 0 and dy == 0:
@@ -88,28 +104,69 @@ def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
             entry = _dl_h_tile_cache.get((nx, ny))
             if entry is None:
                 continue
-            H1_n, H2_n = entry
+            # pick matching H (H1 vs H2) by identity of the local; caller
+            # passes one at a time, so use the same index.
+            # We key the cache as (nx, ny) -> (H1, H2); the caller decides
+            # which slot. Here we accept both and pick later.
+            H_n = entry  # entry is already the single H matrix now
+            # Local grid but as if observed from neighbor's frame:
+            # apply H_n to G_local to get where neighbor's transform would
+            # place THIS tile's grid points.
+            T_n = cv2.perspectiveTransform(G_local[None], H_n)[0]
+            cT_n = cv2.perspectiveTransform(c_local[None], H_n)[0, 0]
+            C_n = T_n - cT_n
             w = float(np.exp(-0.5 * (dx * dx + dy * dy)))
-            upper_accum_1 += w * H1_n[:2, :2]
-            upper_accum_2 += w * H2_n[:2, :2]
-            proj_accum_1  += w * H1_n[2, :2]
-            proj_accum_2  += w * H2_n[2, :2]
+            C_nbr_accum += w * C_n
             weights_sum += w
 
     if weights_sum <= 0:
+        return H_local
+
+    C_nbr_avg = C_nbr_accum / weights_sum
+    # Blend displacements and re-add local center-target to recover
+    # absolute rectified coordinates in the LOCAL tile's frame.
+    C_blend = self_weight * C_local + (1.0 - self_weight) * C_nbr_avg
+    T_blend = C_blend + cT_local
+
+    # DLT fit of smoothed homography.
+    H_new, _ = cv2.findHomography(G_local, T_blend.astype(np.float32), method=0)
+    if H_new is None:
+        return H_local
+    return H_new.astype(H_local.dtype)
+
+
+def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
+                                  tile_w, tile_h,
+                                  neighbor_radius_tiles=1, self_weight=0.4):
+    """Correspondence-based smoothing applied to the pair (H1, H2).
+
+    Uses a temporary per-H cache view so that the single-H smoother sees
+    the right slot of each cached tuple.
+    """
+    if not _dl_h_tile_cache:
         return H1_local, H2_local
 
-    # Blend only the shape (rotation/scale/shear) and projective row.
-    # Keep tile-local translation column and H[2,2] = 1 intact.
-    def _blend(H_local, upper_nbr, proj_nbr):
-        H = H_local.copy()
-        H[:2, :2] = self_weight * H_local[:2, :2] + (1.0 - self_weight) * (upper_nbr / weights_sum)
-        H[2, :2] = self_weight * H_local[2, :2] + (1.0 - self_weight) * (proj_nbr / weights_sum)
-        # Translation column H[:2, 2] and H[2, 2] are left untouched.
-        return H
+    # Build two views of the cache keyed by the same tile origin but
+    # exposing H1 / H2 respectively.
+    cache_snapshot_h1 = {k: v[0] for k, v in _dl_h_tile_cache.items()}
+    cache_snapshot_h2 = {k: v[1] for k, v in _dl_h_tile_cache.items()}
 
-    H1_s = _blend(H1_local, upper_accum_1, proj_accum_1)
-    H2_s = _blend(H2_local, upper_accum_2, proj_accum_2)
+    # Swap the module cache temporarily for each call.
+    global _dl_h_tile_cache
+    original = _dl_h_tile_cache
+    try:
+        _dl_h_tile_cache = cache_snapshot_h1
+        H1_s = _correspondence_smooth_single_h(
+            H1_local, tile_x, tile_y, tile_w, tile_h,
+            neighbor_radius_tiles=neighbor_radius_tiles, self_weight=self_weight,
+        )
+        _dl_h_tile_cache = cache_snapshot_h2
+        H2_s = _correspondence_smooth_single_h(
+            H2_local, tile_x, tile_y, tile_w, tile_h,
+            neighbor_radius_tiles=neighbor_radius_tiles, self_weight=self_weight,
+        )
+    finally:
+        _dl_h_tile_cache = original
     return H1_s, H2_s
 
 
