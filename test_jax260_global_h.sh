@@ -48,6 +48,45 @@ if ! python3 -c "from s2p import homography" 2>/dev/null; then
     make -C /workspace 2>&1 | tail -3 | stdbuf -oL tee -a "$LOGFILE"
 fi
 
+# EOnerf TIFs don't carry GDAL RPC tags, but the side-car .json holds
+# the full RPC dict under a custom key scheme. Translate once and embed
+# the standard tags into the TIF so s2p's rpcm.rpc_from_geotiff path
+# works (same path JAX_214 uses).
+for IMG in "${IMG_L}" "${IMG_R}"; do
+    TIF="${DATA_DIR}/${IMG}"
+    JSON="${TIF%.tif}.json"
+    if [ ! -f "$JSON" ]; then
+        log "${RED}missing EOnerf JSON next to ${TIF}${NC}"; exit 1
+    fi
+    log "${YELLOW}Injecting RPC tags into ${IMG} from $(basename "$JSON")...${NC}"
+    python3 -u <<PYEMBED | stdbuf -oL tee -a "$LOGFILE"
+import json, rasterio
+tif='${TIF}'; js='${JSON}'
+with open(js) as f:
+    r = json.load(f)['rpc']
+tags = {
+    'LINE_OFF'     : str(r['row_offset']),
+    'SAMP_OFF'     : str(r['col_offset']),
+    'LAT_OFF'      : str(r['lat_offset']),
+    'LONG_OFF'     : str(r['lon_offset']),
+    'HEIGHT_OFF'   : str(r['alt_offset']),
+    'LINE_SCALE'   : str(r['row_scale']),
+    'SAMP_SCALE'   : str(r['col_scale']),
+    'LAT_SCALE'    : str(r['lat_scale']),
+    'LONG_SCALE'   : str(r['lon_scale']),
+    'HEIGHT_SCALE' : str(r['alt_scale']),
+    'LINE_NUM_COEFF': ' '.join(str(c) for c in r['row_num']),
+    'LINE_DEN_COEFF': ' '.join(str(c) for c in r['row_den']),
+    'SAMP_NUM_COEFF': ' '.join(str(c) for c in r['col_num']),
+    'SAMP_DEN_COEFF': ' '.join(str(c) for c in r['col_den']),
+}
+with rasterio.open(tif, 'r+') as f:
+    f.update_tags(ns='RPC', **tags)
+    n = len(f.tags(ns='RPC'))
+print(f'  {tif}: embedded {n} RPC tags', flush=True)
+PYEMBED
+done
+
 cd "${DATA_DIR}"
 
 IMG_W=$(python3 -c "import rasterio; f=rasterio.open('${DATA_DIR}/${IMG_L}'); print(f.width)")
