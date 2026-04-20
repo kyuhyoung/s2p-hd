@@ -48,11 +48,19 @@ log "${GREEN}=== Margin Test (Samsung PNEO3, FoundationStereo, tile=1000, margin
 log "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 log "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1)"
 
-# Ensure s2p-hd installed
+# Always force-reinstall s2p from /workspace so the latest host code is
+# reflected in the container's Python path. The container's base install
+# points at /home/s2p-hd/ (snapshotted at Docker build), so without this
+# step edits on the host do not show up at runtime. --no-deps keeps
+# torch/numpy untouched. ~5-10 sec; negligible vs the 12-15 min test.
+log "${YELLOW}Reinstalling s2p-hd from /workspace (editable, --force-reinstall)...${NC}"
+pip3 install --root-user-action=ignore -e /workspace --force-reinstall --no-deps 2>&1 \
+    | tail -3 | stdbuf -oL tee -a "$LOGFILE"
+
+# Build C binaries if missing (not overwritten by pip install -e)
 if ! python3 -c "from s2p import homography" 2>/dev/null; then
-    log "${YELLOW}Rebuilding s2p-hd...${NC}"
-    make -C /workspace clean 2>/dev/null
-    pip3 install --root-user-action=ignore -e /workspace 2>&1 | tail -1 | stdbuf -oL tee -a "$LOGFILE"
+    log "${YELLOW}Building s2p-hd C binaries...${NC}"
+    make -C /workspace 2>&1 | tail -3 | stdbuf -oL tee -a "$LOGFILE"
 fi
 
 # Ensure RGB images exist (same prep as test_tile_size.sh)
