@@ -20,6 +20,21 @@ from s2p import homography
 logger = logging.getLogger(__name__)
 
 
+# Module-level cache for the global DL-stereo flip decision.
+# The altitude-consistency flip is a property of the image pair geometry,
+# not of a tile; making it per-tile causes adjacent tiles that happen to
+# land on different sides of the numeric threshold to disagree, producing
+# seams of 1-3 m at tile boundaries. We cache the first tile's decision
+# and reuse it for every subsequent tile in the same run.
+_dl_global_flip_decision = None
+
+
+def _reset_dl_global_flip_decision():
+    """Reset the cached flip decision. Called at the start of each s2p run."""
+    global _dl_global_flip_decision
+    _dl_global_flip_decision = None
+
+
 class NoHorizontalRegistrationWarning(Warning):
     pass
 
@@ -419,14 +434,37 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
                                                            debug=debug)
                 H2_neg = np.dot(common.matrix_translation(-t_margin, 0), H2_neg)
 
-                # Check altitude consistency
-                mean_alt = np.mean(rpc_utils.altitude_range(cfg, rpc1, x, y, w, h))
-                if disparity_grows_with_altitude(H1, H2_neg, rpc1, rpc2,
-                                                 x + w // 2, y + h // 2, mean_alt):
+                # Decide flip: this is an IMAGE-PAIR property, not a tile property.
+                # Compute once per run (cached in _dl_global_flip_decision) so that
+                # every tile uses the same convention and the tile-to-tile seams
+                # caused by numeric jitter in the per-tile altitude consistency
+                # check disappear. Override via cfg['dl_flip_mode'] in {'auto',
+                # 'always', 'never'}; default 'auto' uses the cached first-tile
+                # decision.
+                global _dl_global_flip_decision
+                flip_mode = cfg.get('dl_flip_mode', 'auto')
+
+                if flip_mode == 'always':
+                    need_flip = True
+                elif flip_mode == 'never':
+                    need_flip = False
+                elif _dl_global_flip_decision is not None:
+                    need_flip = _dl_global_flip_decision
+                    logger.info('using cached dl flip decision: flip=%s', need_flip)
+                else:
+                    mean_alt = np.mean(rpc_utils.altitude_range(cfg, rpc1, x, y, w, h))
+                    grows = disparity_grows_with_altitude(H1, H2_neg, rpc1, rpc2,
+                                                          x + w // 2, y + h // 2,
+                                                          mean_alt)
+                    need_flip = not grows
+                    _dl_global_flip_decision = need_flip
+                    logger.info('dl flip decision (first tile, cached for rest of run): '
+                                'flip=%s', need_flip)
+
+                if not need_flip:
                     H2 = H2_neg
                 else:
                     # Flip: use positive unipolarity instead
-                    # The images will be flipped horizontally during warping
                     logger.info('altitude consistency failed, flipping to positive unipolarity')
                     H2 = register_horizontally_translation(sift_matches, H1, H2,
                                                            flag='positive',

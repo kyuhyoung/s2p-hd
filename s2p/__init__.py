@@ -927,6 +927,12 @@ def main(user_cfg, start_from=0):
     """
     common.reset_elapsed_time()
 
+    # Reset the process-level DL-stereo flip decision so that back-to-back
+    # s2p runs in the same process (e.g. run_all_models.sh) don't inherit
+    # a stale flip from a previous config.
+    from s2p.rectification import _reset_dl_global_flip_decision
+    _reset_dl_global_flip_decision()
+
     # setup logger to stderr
     # (loggers per tiles are set in parallel.py)
     root = logging.getLogger()

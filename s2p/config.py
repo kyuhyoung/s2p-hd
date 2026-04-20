@@ -170,6 +170,9 @@ def get_default_config() -> dict:
     cfg['dl_unipolarity_margin'] = 50   # disparity margin for unipolarity enforcement
     cfg['dl_deterministic'] = False     # enable torch deterministic mode (slower; use when
                                         # comparing runs across PCs / GPUs)
+    cfg['dl_flip_mode'] = 'auto'        # 'auto': first tile decides flip, rest follow
+                                        # 'always': force flip for every tile
+                                        # 'never': never flip
 
     # this option allows to refine the disparity computed by the fast stereosgm_gpu 
     # it only works in combination with  cfg['matching_algorithm'] = 'stereosgm_gpu'
