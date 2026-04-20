@@ -54,13 +54,18 @@ def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
                                   neighbor_radius_tiles=1, self_weight=0.4):
     """Blend this tile's local (H1, H2) with already-cached neighbor tiles'.
 
-    MVP of the "continuous H field" idea: each tile's rectification
-    homography is pulled toward a weighted average of its spatial
-    neighbors in the tile grid, so adjacent tiles produce nearly identical
-    rectifications at their shared boundary. Exact continuity would need
-    a true two-pass pipeline (precompute all H, smooth grid, warp) --
-    this single-pass version is order-dependent but needs no pipeline
-    restructuring.
+    Smooths only the 2x2 upper-left block (rotation/scale/shear -- the
+    pushbroom-induced variation we want to regularize) and the projective
+    row. The translation column [tx, ty] is KEPT per-tile: each tile's H
+    encodes its origin offset, so averaging translations across tiles
+    would invalidate the tile's ROI-to-origin mapping and break the
+    assert_allclose check in rectify_pair.
+
+    MVP of the "continuous H field" idea: adjacent tiles produce nearly
+    identical rectifications at their shared boundary. A true two-pass
+    version (precompute all H, smooth grid, warp) would also smooth
+    translations with the right per-tile renormalization, at the cost of
+    pipeline restructuring.
 
     Returns (H1_smooth, H2_smooth). If no neighbor is cached yet, returns
     the local pair unchanged.
@@ -70,8 +75,10 @@ def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
 
     r = neighbor_radius_tiles
     weights_sum = 0.0
-    H1_accum = np.zeros_like(H1_local, dtype=float)
-    H2_accum = np.zeros_like(H2_local, dtype=float)
+    upper_accum_1 = np.zeros((2, 2), dtype=float)
+    upper_accum_2 = np.zeros((2, 2), dtype=float)
+    proj_accum_1 = np.zeros(2, dtype=float)
+    proj_accum_2 = np.zeros(2, dtype=float)
     for dx in range(-r, r + 1):
         for dy in range(-r, r + 1):
             if dx == 0 and dy == 0:
@@ -82,19 +89,27 @@ def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
             if entry is None:
                 continue
             H1_n, H2_n = entry
-            # Gaussian-ish weight by grid distance
             w = float(np.exp(-0.5 * (dx * dx + dy * dy)))
-            H1_accum += w * H1_n
-            H2_accum += w * H2_n
+            upper_accum_1 += w * H1_n[:2, :2]
+            upper_accum_2 += w * H2_n[:2, :2]
+            proj_accum_1  += w * H1_n[2, :2]
+            proj_accum_2  += w * H2_n[2, :2]
             weights_sum += w
 
     if weights_sum <= 0:
         return H1_local, H2_local
 
-    H1_nbr = H1_accum / weights_sum
-    H2_nbr = H2_accum / weights_sum
-    H1_s = self_weight * H1_local + (1.0 - self_weight) * H1_nbr
-    H2_s = self_weight * H2_local + (1.0 - self_weight) * H2_nbr
+    # Blend only the shape (rotation/scale/shear) and projective row.
+    # Keep tile-local translation column and H[2,2] = 1 intact.
+    def _blend(H_local, upper_nbr, proj_nbr):
+        H = H_local.copy()
+        H[:2, :2] = self_weight * H_local[:2, :2] + (1.0 - self_weight) * (upper_nbr / weights_sum)
+        H[2, :2] = self_weight * H_local[2, :2] + (1.0 - self_weight) * (proj_nbr / weights_sum)
+        # Translation column H[:2, 2] and H[2, 2] are left untouched.
+        return H
+
+    H1_s = _blend(H1_local, upper_accum_1, proj_accum_1)
+    H2_s = _blend(H2_local, upper_accum_2, proj_accum_2)
     return H1_s, H2_s
 
 
