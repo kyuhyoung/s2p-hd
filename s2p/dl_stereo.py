@@ -123,6 +123,42 @@ def _unpad(x, pad):
 _loaded_model = None
 _loaded_model_name = None
 _deterministic_applied = False
+_grid_sample_patched = False
+
+
+def _patch_grid_sample_cudnn_fallback():
+    """cuDNN's grid_sampler returns CUDNN_STATUS_NOT_SUPPORTED when a single
+    input tensor exceeds ~2GB (observed at tile_size=2000 on Samsung PNEO3
+    with FoundationStereo: cost volume shape B*D*H*W*4 bytes > 1.8GB).
+
+    PyTorch's native CUDA kernel for grid_sample has no such limit; it is
+    slightly slower but handles arbitrary sizes. Patch F.grid_sample to
+    retry on cuDNN fallback when the error is hit.
+
+    Covers MonSter, StereoAnywhere, FoundationStereo, RAFT-Stereo without
+    per-file edits since they all route through torch.nn.functional.
+    """
+    global _grid_sample_patched
+    if _grid_sample_patched:
+        return
+    original = F.grid_sample
+
+    def wrapped(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except RuntimeError as e:
+            if 'CUDNN' not in str(e).upper():
+                raise
+            prev = torch.backends.cudnn.enabled
+            torch.backends.cudnn.enabled = False
+            try:
+                return original(*args, **kwargs)
+            finally:
+                torch.backends.cudnn.enabled = prev
+
+    F.grid_sample = wrapped
+    _grid_sample_patched = True
+    logger.info('DL stereo: patched F.grid_sample with cuDNN fallback for large tiles')
 
 
 def _apply_deterministic_mode():
@@ -157,6 +193,7 @@ def load_model(cfg):
     device = cfg['dl_stereo_device']
     dav2_path = cfg.get('dl_depth_anything_v2_path')
 
+    _patch_grid_sample_cudnn_fallback()
     if cfg.get('dl_deterministic', False):
         _apply_deterministic_mode()
 
