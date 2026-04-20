@@ -624,6 +624,17 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
             neighbor_radius_tiles=cfg.get('dl_h_smooth_radius', 1),
             self_weight=cfg.get('dl_h_smooth_self_weight', 0.4),
         )
+        # rectification_homographies() returns H normalized so that the
+        # ROI bbox under H has its top-left at (0, 0); the assert_allclose
+        # at the bottom of this function relies on that invariant. Smoothing
+        # breaks it, so re-apply the same translation fix used upstream.
+        def _recenter_to_roi_origin(H):
+            roi_corners = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+            pts = homography.points_apply_homography(H, roi_corners)
+            x0, y0 = common.bounding_box2D(pts)[:2]
+            return np.dot(common.matrix_translation(-x0, -y0), H)
+        H1 = _recenter_to_roi_origin(H1)
+        H2 = _recenter_to_roi_origin(H2)
         _dl_h_tile_cache[(x, y)] = (H1, H2)
         # Quantify how much the smoothing changed H so that activation is
         # observable in the main log (visible delta = smoothing actually
