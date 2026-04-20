@@ -615,6 +615,21 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         H2 = cfg['_global_H2'].copy()
         F = None
         _used_global_H = True
+        # rectification_homographies() normalizes H so that the ROI bbox it
+        # was fit on maps to (0, 0). The global H was fit on the WHOLE ROI,
+        # so for any tile that isn't at the ROI origin, this tile's ROI bbox
+        # under H lands at a non-zero offset; the downstream
+        # assert_allclose(bbox == (hmargin, vmargin)) then fails by exactly
+        # that offset. Re-apply the same bbox-to-origin translation here,
+        # per tile, so the invariant is preserved without perturbing the
+        # shape of the rectification (still identical across tiles).
+        roi_tile = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+        _pts = homography.points_apply_homography(H1, roi_tile)
+        _x0, _y0 = common.bounding_box2D(_pts)[:2]
+        T_local = common.matrix_translation(-_x0, -_y0)
+        H1 = np.dot(T_local, H1)
+        H2 = np.dot(T_local, H2)
+
         # Propagate the globally-decided flip to this tile's local cfg so the
         # image-flip step after warping runs consistently. The flag is set
         # per tile (not once at pre-compute) because cfg.pop removes it
