@@ -601,14 +601,33 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         logging.info("No or not enough matches found to rectify image pair")
         return None, None, None, None, False
 
-    try:
-        # compute rectifying homographies
-        H1, H2, F = rectification_homographies(matches, x, y, w, h, debug=debug)
-    except AssertionError:
-        logging.info("rectification.rectify_pair.rectification_homographies assertion failed")
-        return None, None, None, None, False
+    # If a global rectification was pre-computed (cfg['dl_global_rectification']
+    # path), reuse it for every tile so adjacent tiles share a single H and
+    # their rectifications match byte-for-byte at the shared boundary. Each
+    # tile still computes its own disparity range and hmargin below, then
+    # composes T_tile on top of the global H, which preserves per-tile
+    # output framing without introducing per-tile rectification drift.
+    if cfg.get('_global_H1') is not None and cfg.get('_global_H2') is not None:
+        H1 = cfg['_global_H1'].copy()
+        H2 = cfg['_global_H2'].copy()
+        F = None
+        _used_global_H = True
+        # Propagate the globally-decided flip to this tile's local cfg so the
+        # image-flip step after warping runs consistently. The flag is set
+        # per tile (not once at pre-compute) because cfg.pop removes it
+        # after each tile's flip step.
+        if (cfg.get('matching_algorithm') == 'dl_stereo' and
+                _dl_global_flip_decision is True):
+            cfg['_dl_flip_images'] = True
+    else:
+        _used_global_H = False
+        try:
+            H1, H2, F = rectification_homographies(matches, x, y, w, h, debug=debug)
+        except AssertionError:
+            logging.info("rectification.rectify_pair.rectification_homographies assertion failed")
+            return None, None, None, None, False
 
-    if cfg['register_with_shear']:
+    if cfg['register_with_shear'] and not _used_global_H:
         # compose H2 with a horizontal shear to reduce the disparity range
         a = np.mean(rpc_utils.altitude_range(cfg, rpc1, x, y, w, h))
         lon, lat, alt = rpc_utils.ground_control_points(rpc1, x, y, w, h, a, a, 4)
@@ -624,7 +643,11 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
     # For classical matchers: center around 0 (original behavior).
     use_dl = cfg.get('matching_algorithm') == 'dl_stereo'
 
-    if sift_matches is not None:
+    # Under global rectification we skip local SIFT-driven H2 refinement:
+    # running it per tile would reintroduce the exact tile-to-tile H drift
+    # the global mode is meant to eliminate. The flip decision cache is
+    # still populated (below) so the downstream image-flip step still runs.
+    if sift_matches is not None and not _used_global_H:
         sift_matches = filter_matches_epipolar_constraint(F, sift_matches,
                                                           cfg['epipolar_thresh'])
         if len(sift_matches) < 1:
@@ -690,7 +713,9 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
     # neighbor tiles are already cached, then store the result for future
     # tiles to use. Single-pass so neighbor coverage is order-dependent but
     # a true two-pass refactor would require splitting rectify_pair.
-    if use_dl and cfg.get('dl_h_smooth', False):
+    # Skip under global rectification: all tiles already share a single H,
+    # so blending with neighbors only reintroduces drift.
+    if use_dl and cfg.get('dl_h_smooth', False) and not _used_global_H:
         H1_raw, H2_raw = H1.copy(), H2.copy()
         H1, H2 = _smooth_h_pair_with_neighbors(
             H1, H2, x, y, w, h,

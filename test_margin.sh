@@ -17,18 +17,26 @@ export CUDA_VISIBLE_DEVICES
 
 SMOOTH_H=false
 SMOOTH_METHOD=correspondence
+GLOBAL_H=false
 for arg in "$@"; do
     case "$arg" in
         --smooth-h) SMOOTH_H=true ;;
         --log-euclidean) SMOOTH_H=true; SMOOTH_METHOD=log_euclidean ;;
+        --global-h) GLOBAL_H=true ;;
         *) echo "unknown arg: $arg" >&2; exit 1 ;;
     esac
 done
+if [ "$SMOOTH_H" = true ] && [ "$GLOBAL_H" = true ]; then
+    echo "--smooth-h/--log-euclidean and --global-h are mutually exclusive" >&2
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="${SCRIPT_DIR}/test_margin.log"
 DATA_DIR=/data/satellite/seoul/gangnam/samsung/260406_Samseong_gwarp
-if [ "$SMOOTH_H" = true ]; then
+if [ "$GLOBAL_H" = true ]; then
+    OUT_DIR=./tiletest_1000_margin_globalH
+elif [ "$SMOOTH_H" = true ]; then
     if [ "$SMOOTH_METHOD" = "log_euclidean" ]; then
         OUT_DIR=./tiletest_1000_margin_smoothH_logeuc
     else
@@ -108,7 +116,8 @@ cat > "$CONFIG" <<EOFCFG
   "dl_lr_threshold": 2,
   "dl_unipolarity_margin": 50,
   "dl_h_smooth": ${SMOOTH_H},
-  "dl_h_smooth_method": "${SMOOTH_METHOD}"
+  "dl_h_smooth_method": "${SMOOTH_METHOD}",
+  "dl_global_rectification": ${GLOBAL_H}
 }
 EOFCFG
 

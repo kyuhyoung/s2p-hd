@@ -182,6 +182,13 @@ def get_default_config() -> dict:
     cfg['dl_h_smooth_method'] = 'correspondence'  # 'correspondence' (DLT of
                                         # pixel-blended targets) or 'log_euclidean'
                                         # (Lie-algebra mean of det-normalized H)
+    cfg['dl_global_rectification'] = False  # compute one rectification H for
+                                        # the whole ROI from RPC virtual matches
+                                        # and share it across all tiles. Eliminates
+                                        # tile-boundary seams at the rectification
+                                        # source. Safe for pushbroom on scenes
+                                        # under ~10 km (linear approximation error
+                                        # << 1 px).
 
     # this option allows to refine the disparity computed by the fast stereosgm_gpu 
     # it only works in combination with  cfg['matching_algorithm'] = 'stereosgm_gpu'

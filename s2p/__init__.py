@@ -996,6 +996,52 @@ def main(user_cfg, start_from=0):
     # rectification step:
     if start_from <= 3:
         logger.info('3) rectifying tiles...')
+        # If enabled, compute a SINGLE global rectification homography for
+        # the whole ROI from RPC virtual matches and stash it in cfg. All
+        # tiles will reuse the same H1/H2 base, so adjacent tiles have
+        # byte-identical rectification conventions and the per-tile
+        # boundary seams disappear.
+        if cfg.get('dl_global_rectification', False):
+            from s2p import rpc_utils
+            roi = cfg['roi']
+            rpc1 = cfg['images'][0]['rpcm']
+            rpc2 = cfg['images'][1]['rpcm']
+            g_matches = rpc_utils.matches_from_rpc(cfg, rpc1, rpc2,
+                                                   roi['x'], roi['y'], roi['w'], roi['h'],
+                                                   cfg['n_gcp_per_axis'])
+            H1g, H2g, _Fg = rectification.rectification_homographies(
+                g_matches, roi['x'], roi['y'], roi['w'], roi['h'])
+
+            # Global unipolarity + flip for DL stereo. Running these at image
+            # level (not per tile) guarantees every tile shares the same
+            # post-refinement H, so tile-boundary seams vanish.
+            if cfg.get('matching_algorithm') == 'dl_stereo':
+                t_margin = cfg.get('dl_unipolarity_margin', 50)
+                H2g_neg = rectification.register_horizontally_translation(
+                    g_matches, H1g, H2g, flag='negative')
+                H2g_neg = np.dot(common.matrix_translation(-t_margin, 0), H2g_neg)
+                mean_alt = np.mean(rpc_utils.altitude_range(cfg, rpc1,
+                                                            roi['x'], roi['y'],
+                                                            roi['w'], roi['h']))
+                grows = rectification.disparity_grows_with_altitude(
+                    H1g, H2g_neg, rpc1, rpc2,
+                    roi['x'] + roi['w'] // 2, roi['y'] + roi['h'] // 2, mean_alt)
+                # Seed the global flip cache so per-tile code agrees.
+                rectification._dl_global_flip_decision = not grows
+                if grows:
+                    H2g = H2g_neg
+                else:
+                    H2g = rectification.register_horizontally_translation(
+                        g_matches, H1g, H2g, flag='positive')
+                    H2g = np.dot(common.matrix_translation(t_margin, 0), H2g)
+                logger.info('dl_global_rectification: unipolarity applied globally; '
+                            'flip=%s', not grows)
+
+            cfg['_global_H1'] = H1g
+            cfg['_global_H2'] = H2g
+            logger.info('dl_global_rectification: computed global H from '
+                        '%d RPC virtual matches on ROI %dx%d',
+                        len(g_matches), roi['w'], roi['h'])
         successes = parallel.launch_calls(cfg, rectification_pair, tiles_pairs, nb_workers,
                               timeout=timeout)
 
