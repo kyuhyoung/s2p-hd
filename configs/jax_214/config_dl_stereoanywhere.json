@@ -14,8 +14,8 @@
     "w": 2000,
     "h": 2000
   },
-  "horizontal_margin": 20,
-  "vertical_margin": 5,
+  "horizontal_margin": 100,
+  "vertical_margin": 100,
   "tile_size": 1000,
   "disp_range_method": "sift",
   "msk_erosion": 0,

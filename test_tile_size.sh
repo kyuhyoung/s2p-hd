@@ -55,8 +55,8 @@ for TILE_SIZE in 1000 2000 4000 8000; do
     {"img": "rgb/IMG_PNEO3_STE_202603120224586_PS.tif"}
   ],
   "roi": {"x": 7097, "y": 3049, "w": 4704, "h": 4080},
-  "horizontal_margin": 20,
-  "vertical_margin": 5,
+  "horizontal_margin": 100,
+  "vertical_margin": 100,
   "tile_size": ${TILE_SIZE},
   "disp_range_method": "sift",
   "msk_erosion": 0,
