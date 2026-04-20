@@ -580,6 +580,9 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         disp_min, disp_max: horizontal disparity range
         success: bool (can be false if not enough matches, invalid homographies, ...)
     """
+    global _dl_global_flip_decision  # may be read early (global-H branch) or
+                                      # written later (per-tile flip decision).
+                                      # Hoist so both access paths are valid.
     debug = cfg['debug']
     # compute real or virtual matches
     if method == 'rpc':
@@ -671,8 +674,7 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
                 # caused by numeric jitter in the per-tile altitude consistency
                 # check disappear. Override via cfg['dl_flip_mode'] in {'auto',
                 # 'always', 'never'}; default 'auto' uses the cached first-tile
-                # decision.
-                global _dl_global_flip_decision
+                # decision. (global declared at top of rectify_pair.)
                 flip_mode = cfg.get('dl_flip_mode', 'auto')
 
                 if flip_mode == 'always':
@@ -689,6 +691,7 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
                                                           mean_alt)
                     need_flip = not grows
                     _dl_global_flip_decision = need_flip
+                    # global declared at function top so this rebinding is valid
                     logger.info('dl flip decision (first tile, cached for rest of run): '
                                 'flip=%s', need_flip)
 
