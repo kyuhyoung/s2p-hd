@@ -546,14 +546,23 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
     # tiles to use. Single-pass so neighbor coverage is order-dependent but
     # a true two-pass refactor would require splitting rectify_pair.
     if use_dl and cfg.get('dl_h_smooth', False):
+        H1_raw, H2_raw = H1.copy(), H2.copy()
         H1, H2 = _smooth_h_pair_with_neighbors(
             H1, H2, x, y, w, h,
             neighbor_radius_tiles=cfg.get('dl_h_smooth_radius', 1),
             self_weight=cfg.get('dl_h_smooth_self_weight', 0.4),
         )
         _dl_h_tile_cache[(x, y)] = (H1, H2)
-        logger.info('dl_h_smooth: cached tile (%d, %d), total tiles cached=%d',
-                    x, y, len(_dl_h_tile_cache))
+        # Quantify how much the smoothing changed H so that activation is
+        # observable in the main log (visible delta = smoothing actually
+        # happened; zero delta = first tile with no cached neighbors yet).
+        dH1 = float(np.max(np.abs(H1 - H1_raw)))
+        dH2 = float(np.max(np.abs(H2 - H2_raw)))
+        msg = ('[dl_h_smooth] tile (%d, %d)  cached=%d  '
+               'max|dH1|=%.4g  max|dH2|=%.4g' %
+               (x, y, len(_dl_h_tile_cache), dH1, dH2))
+        logger.info(msg)
+        print(msg, flush=True)  # also to stdout for visibility in test_margin.log
 
     # compute disparity range
     if debug and sift_matches is not None:

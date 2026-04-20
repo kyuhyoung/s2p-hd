@@ -129,5 +129,26 @@ else
     log "${RED}dsm.tif not generated${NC}"
 fi
 
+# Verify dl_h_smooth activation (if requested)
+log ""
+log "${GREEN}--- dl_h_smooth activation check ---${NC}"
+if [ "$SMOOTH_H" = true ]; then
+    hits=$(find "${OUT_DIR}/tiles" -name stdout.log 2>/dev/null \
+           -exec grep -l '\[dl_h_smooth\]' {} + 2>/dev/null | wc -l)
+    log "tiles that logged [dl_h_smooth]: ${hits} (expect 20 for full tile=1000 grid)"
+    if [ "$hits" -gt 0 ]; then
+        sample=$(find "${OUT_DIR}/tiles" -name stdout.log 2>/dev/null \
+                 | head -3 | xargs grep -h '\[dl_h_smooth\]' 2>/dev/null | head -5)
+        log "sample log lines:"
+        printf "%s\n" "$sample" | while read -r line; do log "  ${line}"; done
+    else
+        log "${RED}WARNING: no tile logged [dl_h_smooth]. Either cfg flag was ignored"
+        log "  or the s2p code that was invoked is an older build without this feature.${NC}"
+        log "  Try: pip install --root-user-action=ignore -e /workspace --force-reinstall --no-deps"
+    fi
+else
+    log "--smooth-h was NOT passed; feature disabled for this run."
+fi
+
 log ""
 log "${GREEN}Done. Output in: ${DATA_DIR}/${OUT_DIR}${NC}"
