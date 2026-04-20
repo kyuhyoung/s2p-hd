@@ -38,8 +38,8 @@ log "========== $(date '+%Y-%m-%d %H:%M:%S') =========="
 log "${GREEN}=== IARPA_001 global-H vs per-tile benchmark (FoundationStereo) ===${NC}"
 log "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 
-# Sanity checks
-for f in "${DATA_DIR}/${IMG_L}" "${DATA_DIR}/${IMG_R}" "${DATA_DIR}/${RPC_L}" "${DATA_DIR}/${RPC_R}"; do
+# Sanity checks (RPC is embedded in the TIF metadata; .RPB not needed here)
+for f in "${DATA_DIR}/${IMG_L}" "${DATA_DIR}/${IMG_R}"; do
     if [ ! -f "$f" ]; then
         log "${RED}missing: ${f}${NC}"
         exit 1
@@ -90,8 +90,8 @@ for TS in 1000 600; do
 {
   "out_dir": "${OUT_REL}",
   "images": [
-    {"img": "${IMG_L}", "rpc": "${RPC_L}"},
-    {"img": "${IMG_R}", "rpc": "${RPC_R}"}
+    {"img": "${IMG_L}"},
+    {"img": "${IMG_R}"}
   ],
   "roi": {"x": ${ROI_X}, "y": ${ROI_Y}, "w": ${ROI_W}, "h": ${ROI_H}},
   "horizontal_margin": 100,
