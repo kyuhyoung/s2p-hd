@@ -143,6 +143,7 @@ def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
     Uses a temporary per-H cache view so that the single-H smoother sees
     the right slot of each cached tuple.
     """
+    global _dl_h_tile_cache
     if not _dl_h_tile_cache:
         return H1_local, H2_local
 
@@ -152,7 +153,6 @@ def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
     cache_snapshot_h2 = {k: v[1] for k, v in _dl_h_tile_cache.items()}
 
     # Swap the module cache temporarily for each call.
-    global _dl_h_tile_cache
     original = _dl_h_tile_cache
     try:
         _dl_h_tile_cache = cache_snapshot_h1
