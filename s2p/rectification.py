@@ -28,11 +28,74 @@ logger = logging.getLogger(__name__)
 # and reuse it for every subsequent tile in the same run.
 _dl_global_flip_decision = None
 
+# Module-level cache of per-tile rectification homographies.
+# Keyed by tile origin (x, y). Value is (H1, H2). Populated when
+# cfg['dl_h_smooth'] is True so later tiles can blend their local H with
+# already-computed neighbor tiles' H -- reduces tile-boundary seams that
+# SGM never exhibits but DL stereo does, because the DL model amplifies
+# small per-tile rectification differences.
+#
+# Caveat: single-pass implementation. First tiles have no neighbors cached
+# yet and use pure local H. Tiles processed later benefit from accumulated
+# neighbor info. The smoothing is therefore uneven in time, though in
+# space it tends to converge as the tile grid fills in.
+_dl_h_tile_cache = {}
+
 
 def _reset_dl_global_flip_decision():
-    """Reset the cached flip decision. Called at the start of each s2p run."""
+    """Reset the cached flip decision and H cache. Called at the start of each s2p run."""
     global _dl_global_flip_decision
     _dl_global_flip_decision = None
+    _dl_h_tile_cache.clear()
+
+
+def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
+                                  tile_w, tile_h,
+                                  neighbor_radius_tiles=1, self_weight=0.4):
+    """Blend this tile's local (H1, H2) with already-cached neighbor tiles'.
+
+    MVP of the "continuous H field" idea: each tile's rectification
+    homography is pulled toward a weighted average of its spatial
+    neighbors in the tile grid, so adjacent tiles produce nearly identical
+    rectifications at their shared boundary. Exact continuity would need
+    a true two-pass pipeline (precompute all H, smooth grid, warp) --
+    this single-pass version is order-dependent but needs no pipeline
+    restructuring.
+
+    Returns (H1_smooth, H2_smooth). If no neighbor is cached yet, returns
+    the local pair unchanged.
+    """
+    if not _dl_h_tile_cache:
+        return H1_local, H2_local
+
+    r = neighbor_radius_tiles
+    weights_sum = 0.0
+    H1_accum = np.zeros_like(H1_local, dtype=float)
+    H2_accum = np.zeros_like(H2_local, dtype=float)
+    for dx in range(-r, r + 1):
+        for dy in range(-r, r + 1):
+            if dx == 0 and dy == 0:
+                continue
+            nx = tile_x + dx * tile_w
+            ny = tile_y + dy * tile_h
+            entry = _dl_h_tile_cache.get((nx, ny))
+            if entry is None:
+                continue
+            H1_n, H2_n = entry
+            # Gaussian-ish weight by grid distance
+            w = float(np.exp(-0.5 * (dx * dx + dy * dy)))
+            H1_accum += w * H1_n
+            H2_accum += w * H2_n
+            weights_sum += w
+
+    if weights_sum <= 0:
+        return H1_local, H2_local
+
+    H1_nbr = H1_accum / weights_sum
+    H2_nbr = H2_accum / weights_sum
+    H1_s = self_weight * H1_local + (1.0 - self_weight) * H1_nbr
+    H2_s = self_weight * H2_local + (1.0 - self_weight) * H2_nbr
+    return H1_s, H2_s
 
 
 class NoHorizontalRegistrationWarning(Warning):
@@ -477,6 +540,20 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
             else:
                 H2 = register_horizontally_translation(sift_matches, H1, H2,
                                                        debug=debug)
+
+    # DL continuous-H-field MVP. Blend this tile's (H1, H2) with whichever
+    # neighbor tiles are already cached, then store the result for future
+    # tiles to use. Single-pass so neighbor coverage is order-dependent but
+    # a true two-pass refactor would require splitting rectify_pair.
+    if use_dl and cfg.get('dl_h_smooth', False):
+        H1, H2 = _smooth_h_pair_with_neighbors(
+            H1, H2, x, y, w, h,
+            neighbor_radius_tiles=cfg.get('dl_h_smooth_radius', 1),
+            self_weight=cfg.get('dl_h_smooth_self_weight', 0.4),
+        )
+        _dl_h_tile_cache[(x, y)] = (H1, H2)
+        logger.info('dl_h_smooth: cached tile (%d, %d), total tiles cached=%d',
+                    x, y, len(_dl_h_tile_cache))
 
     # compute disparity range
     if debug and sift_matches is not None:

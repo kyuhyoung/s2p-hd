@@ -173,6 +173,12 @@ def get_default_config() -> dict:
     cfg['dl_flip_mode'] = 'auto'        # 'auto': first tile decides flip, rest follow
                                         # 'always': force flip for every tile
                                         # 'never': never flip
+    cfg['dl_h_smooth'] = False          # enable the continuous-H-field MVP: each
+                                        # tile blends its local H1/H2 with neighbor
+                                        # tiles' H to reduce tile-boundary seams in
+                                        # DL stereo DSM. Single-pass, order-dependent.
+    cfg['dl_h_smooth_radius'] = 1       # neighbor lookup radius in tile units
+    cfg['dl_h_smooth_self_weight'] = 0.4  # 0=pure neighbors, 1=pure local
 
     # this option allows to refine the disparity computed by the fast stereosgm_gpu 
     # it only works in combination with  cfg['matching_algorithm'] = 'stereosgm_gpu'

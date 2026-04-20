@@ -7,14 +7,30 @@
 #
 # Run inside docker container: bash test_margin.sh
 # GPU selection: defaults to GPU 7. Override: CUDA_VISIBLE_DEVICES=N bash test_margin.sh
+#
+# Flags:
+#   --smooth-h  Enable continuous-H-field smoothing to reduce tile-boundary seams
+#               (MVP: each tile blends its local H1/H2 with cached neighbor tiles').
 
 : "${CUDA_VISIBLE_DEVICES:=7}"
 export CUDA_VISIBLE_DEVICES
 
+SMOOTH_H=false
+for arg in "$@"; do
+    case "$arg" in
+        --smooth-h) SMOOTH_H=true ;;
+        *) echo "unknown arg: $arg" >&2; exit 1 ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="${SCRIPT_DIR}/test_margin.log"
 DATA_DIR=/data/satellite/seoul/gangnam/samsung/260406_Samseong_gwarp
-OUT_DIR=./tiletest_1000_margin
+if [ "$SMOOTH_H" = true ]; then
+    OUT_DIR=./tiletest_1000_margin_smoothH
+else
+    OUT_DIR=./tiletest_1000_margin
+fi
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -76,7 +92,8 @@ cat > "$CONFIG" <<EOFCFG
   "dl_border_trim": 32,
   "dl_lr_check": false,
   "dl_lr_threshold": 2,
-  "dl_unipolarity_margin": 50
+  "dl_unipolarity_margin": 50,
+  "dl_h_smooth": ${SMOOTH_H}
 }
 EOFCFG
 
