@@ -135,13 +135,82 @@ def _correspondence_smooth_single_h(H_local, tile_x, tile_y, tile_w, tile_h,
     return H_new.astype(H_local.dtype)
 
 
+def _log_euclidean_smooth_single_h(H_local, tile_x, tile_y, tile_w, tile_h,
+                                    neighbor_radius_tiles=1, self_weight=0.4):
+    """Log-Euclidean (Lie-algebra) smoothing of a single rectification H.
+
+    Each H is normalized to det=1, mapped to sl(3) via matrix logarithm,
+    averaged linearly in that vector space, then mapped back via matrix
+    exponential. Stays on the homography manifold by construction.
+
+    ~15 lines; simpler than correspondence-based. Does not preserve any
+    geometric invariant (e.g. ROI origin at 0), so caller must recenter.
+    """
+    if not _dl_h_tile_cache:
+        return H_local
+    try:
+        from scipy.linalg import logm, expm
+    except ImportError:
+        logger.warning('scipy not available for log-Euclidean smoothing')
+        return H_local
+
+    def _norm(H):
+        det = np.linalg.det(H)
+        if abs(det) < 1e-12:
+            return H
+        return H / np.cbrt(abs(det))
+
+    try:
+        L_local = logm(_norm(H_local))
+    except Exception:
+        return H_local
+
+    r = neighbor_radius_tiles
+    L_nbr_accum = np.zeros_like(L_local)
+    weights_sum = 0.0
+    for dx in range(-r, r + 1):
+        for dy in range(-r, r + 1):
+            if dx == 0 and dy == 0:
+                continue
+            nx = tile_x + dx * tile_w
+            ny = tile_y + dy * tile_h
+            H_n = _dl_h_tile_cache.get((nx, ny))
+            if H_n is None:
+                continue
+            try:
+                L_n = logm(_norm(H_n))
+            except Exception:
+                continue
+            w = float(np.exp(-0.5 * (dx * dx + dy * dy)))
+            L_nbr_accum += w * L_n
+            weights_sum += w
+
+    if weights_sum <= 0:
+        return H_local
+
+    L_nbr = L_nbr_accum / weights_sum
+    L_blend = self_weight * L_local + (1.0 - self_weight) * L_nbr
+    try:
+        H_new = np.real(expm(L_blend))
+    except Exception:
+        return H_local
+
+    # Restore original scale (we normalized to det=1).
+    det_local = abs(np.linalg.det(H_local))
+    det_new = abs(np.linalg.det(H_new))
+    if det_new > 1e-12:
+        H_new = H_new * np.cbrt(det_local / det_new)
+    return H_new.astype(H_local.dtype)
+
+
 def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
                                   tile_w, tile_h,
-                                  neighbor_radius_tiles=1, self_weight=0.4):
-    """Correspondence-based smoothing applied to the pair (H1, H2).
+                                  neighbor_radius_tiles=1, self_weight=0.4,
+                                  method='correspondence'):
+    """Smooth the pair (H1, H2) using the selected method.
 
-    Uses a temporary per-H cache view so that the single-H smoother sees
-    the right slot of each cached tuple.
+    method: 'correspondence' (DLT of blended pixel targets) or
+            'log_euclidean' (Lie-algebra mean of det-normalized H).
     """
     global _dl_h_tile_cache
     if not _dl_h_tile_cache:
@@ -152,16 +221,20 @@ def _smooth_h_pair_with_neighbors(H1_local, H2_local, tile_x, tile_y,
     cache_snapshot_h1 = {k: v[0] for k, v in _dl_h_tile_cache.items()}
     cache_snapshot_h2 = {k: v[1] for k, v in _dl_h_tile_cache.items()}
 
-    # Swap the module cache temporarily for each call.
+    if method == 'log_euclidean':
+        smoother = _log_euclidean_smooth_single_h
+    else:
+        smoother = _correspondence_smooth_single_h
+
     original = _dl_h_tile_cache
     try:
         _dl_h_tile_cache = cache_snapshot_h1
-        H1_s = _correspondence_smooth_single_h(
+        H1_s = smoother(
             H1_local, tile_x, tile_y, tile_w, tile_h,
             neighbor_radius_tiles=neighbor_radius_tiles, self_weight=self_weight,
         )
         _dl_h_tile_cache = cache_snapshot_h2
-        H2_s = _correspondence_smooth_single_h(
+        H2_s = smoother(
             H2_local, tile_x, tile_y, tile_w, tile_h,
             neighbor_radius_tiles=neighbor_radius_tiles, self_weight=self_weight,
         )
@@ -623,6 +696,7 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
             H1, H2, x, y, w, h,
             neighbor_radius_tiles=cfg.get('dl_h_smooth_radius', 1),
             self_weight=cfg.get('dl_h_smooth_self_weight', 0.4),
+            method=cfg.get('dl_h_smooth_method', 'correspondence'),
         )
         # rectification_homographies() returns H normalized so that the
         # ROI bbox under H has its top-left at (0, 0); the assert_allclose

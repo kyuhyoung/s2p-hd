@@ -179,6 +179,9 @@ def get_default_config() -> dict:
                                         # DL stereo DSM. Single-pass, order-dependent.
     cfg['dl_h_smooth_radius'] = 1       # neighbor lookup radius in tile units
     cfg['dl_h_smooth_self_weight'] = 0.4  # 0=pure neighbors, 1=pure local
+    cfg['dl_h_smooth_method'] = 'correspondence'  # 'correspondence' (DLT of
+                                        # pixel-blended targets) or 'log_euclidean'
+                                        # (Lie-algebra mean of det-normalized H)
 
     # this option allows to refine the disparity computed by the fast stereosgm_gpu 
     # it only works in combination with  cfg['matching_algorithm'] = 'stereosgm_gpu'

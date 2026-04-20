@@ -16,9 +16,11 @@
 export CUDA_VISIBLE_DEVICES
 
 SMOOTH_H=false
+SMOOTH_METHOD=correspondence
 for arg in "$@"; do
     case "$arg" in
         --smooth-h) SMOOTH_H=true ;;
+        --log-euclidean) SMOOTH_H=true; SMOOTH_METHOD=log_euclidean ;;
         *) echo "unknown arg: $arg" >&2; exit 1 ;;
     esac
 done
@@ -27,7 +29,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="${SCRIPT_DIR}/test_margin.log"
 DATA_DIR=/data/satellite/seoul/gangnam/samsung/260406_Samseong_gwarp
 if [ "$SMOOTH_H" = true ]; then
-    OUT_DIR=./tiletest_1000_margin_smoothH
+    if [ "$SMOOTH_METHOD" = "log_euclidean" ]; then
+        OUT_DIR=./tiletest_1000_margin_smoothH_logeuc
+    else
+        OUT_DIR=./tiletest_1000_margin_smoothH
+    fi
 else
     OUT_DIR=./tiletest_1000_margin
 fi
@@ -101,7 +107,8 @@ cat > "$CONFIG" <<EOFCFG
   "dl_lr_check": false,
   "dl_lr_threshold": 2,
   "dl_unipolarity_margin": 50,
-  "dl_h_smooth": ${SMOOTH_H}
+  "dl_h_smooth": ${SMOOTH_H},
+  "dl_h_smooth_method": "${SMOOTH_METHOD}"
 }
 EOFCFG
 
