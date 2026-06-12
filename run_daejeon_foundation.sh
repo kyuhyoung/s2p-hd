@@ -186,6 +186,16 @@ PYCFG
 
     local S2P_INNER="set -e
 pip3 install --quiet --root-user-action=ignore -e /workspace 2>&1 | tail -1
+echo '=== warming DL model cache (single process, avoids multi-worker download race) ==='
+python3 - <<'PYWARM'
+import json, sys
+sys.path.insert(0, '/workspace')
+cfg = json.load(open('${cfg_docker}'))
+cfg['dl_stereo_device'] = 'cuda:0'
+from s2p import dl_stereo
+dl_stereo.load_model(cfg)
+print('DL model cache warmed')
+PYWARM
 echo '=== s2p foundation (${part}) ==='
 stdbuf -oL s2p ${cfg_docker}
 echo '=== ${part} done ==='
@@ -197,9 +207,10 @@ echo '=== ${part} done ==='
         --shm-size=64g \
         --net=host \
         -e HOME=/tmp \
-        -e HF_HOME=/tmp/hf_cache \
-        -e XDG_CACHE_HOME=/tmp/.cache \
-        -e TORCH_HOME=/tmp/torch_cache \
+        -e HF_HOME=/dl_cache/hf \
+        -e XDG_CACHE_HOME=/dl_cache/xdg \
+        -e TORCH_HOME=/dl_cache/torch \
+        -v /data/kevin_workspace/pretrained_model/dl_cache:/dl_cache \
         -v "${DIR_DATA}":/data \
         -v "${S2P_HD_REPO}":/workspace \
         -v "${PRETRAINED}":/pretrained:ro \
