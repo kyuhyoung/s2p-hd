@@ -1,54 +1,72 @@
 #include "dsm_interpolation.h"
 
 extern "C" {
-    void interpolate_with_all_direction(float* dsm_data, int rows_dsm_data, int cols_dsm_data, long long* nan_coords, int rows_nan_coords, int cols_nan_coords)
+    // mode 0: 4방향 평균 (기존 동작)
+    // mode 1: 비대칭(ground) fill — 후보 격차가 GROUND_SPREAD_TH 이상이고
+    //         "낮은 그룹"(min+TH 이내)이 다수(과반)면 min 채택.
+    //         - 건물 바깥 경계 gap: ground 방향 후보가 다수 -> min (halo 방지)
+    //         - 건물 내부(옥상) gap: 옥상 높이 후보가 다수 -> 평균 유지 (옥상 구멍 방지)
+    void interpolate_with_all_direction_mode(float* dsm_data, int rows_dsm_data, int cols_dsm_data, long long* nan_coords, int rows_nan_coords, int cols_nan_coords, int mode)
     {
+        const float GROUND_SPREAD_TH = 5.0f;  // m — 후보 격차/낮은그룹 판정 임계
         int x, y;
-        float horizon_value, vertical_value, right_diagonal_value, left_diagonal_value;
-        int count;
-        float sum;
+        float vals[4];
+        int count, low_count;
+        float sum, vmin, vmax;
         for (int ii=0; ii<rows_nan_coords; ii++)
         {
             x = nan_coords[ii * cols_nan_coords+0];
             y = nan_coords[ii * cols_nan_coords+1];
-            horizon_value = horizontal_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
-            vertical_value = vertical_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
-            right_diagonal_value = right_diagonal_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
-            left_diagonal_value = left_diagonal_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
-            
+            vals[0] = horizontal_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
+            vals[1] = vertical_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
+            vals[2] = right_diagonal_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
+            vals[3] = left_diagonal_search(x, y, dsm_data, rows_dsm_data, cols_dsm_data);
+
             count = 0;
             sum = 0.;
+            vmin = 0.;
+            vmax = 0.;
 
-            if (horizon_value != -9999.)
+            for (int k=0; k<4; k++)
             {
-                count+=1;
-                sum+=horizon_value;
-            }
-
-            if (vertical_value != -9999.)
-            {
-                count+=1;
-                sum+=vertical_value;
-            }
-
-            if (right_diagonal_value != -9999.)
-            {
-                count+=1;
-                sum+=right_diagonal_value;
-            }
-
-            if (left_diagonal_value != -9999.)
-            {
-                count+=1;
-                sum+=left_diagonal_value;
+                if (vals[k] != -9999.)
+                {
+                    if (count == 0) { vmin = vals[k]; vmax = vals[k]; }
+                    else
+                    {
+                        if (vals[k] < vmin) vmin = vals[k];
+                        if (vals[k] > vmax) vmax = vals[k];
+                    }
+                    count += 1;
+                    sum += vals[k];
+                }
             }
 
             if (count != 0)
             {
-                dsm_data[x*cols_dsm_data + y] = sum/float(count);
-                // printf("%d\t%d\t%f\t%f\t%f\t%f\t%f\n", x, y, horizon_value, vertical_value, right_diagonal_value, left_diagonal_value, sum/float(count));
+                bool use_min = false;
+                if (mode == 1 && (vmax - vmin) >= GROUND_SPREAD_TH)
+                {
+                    // 다수결: min+TH 이내의 "낮은" 후보가 과반이면 경계로 보고 min
+                    low_count = 0;
+                    for (int k=0; k<4; k++)
+                        if (vals[k] != -9999. && vals[k] <= vmin + GROUND_SPREAD_TH)
+                            low_count += 1;
+                    if (2 * low_count >= count) use_min = true;  // 동률(반반)은 경계로 보고 min
+                }
+
+                if (use_min)
+                    dsm_data[x*cols_dsm_data + y] = vmin;       // 건물 바깥 경계: ground 쪽
+                else
+                    dsm_data[x*cols_dsm_data + y] = sum/float(count);
             }
         }
+    }
+
+    // 기존 ABI 유지 — 평균 모드로 위임
+    void interpolate_with_all_direction(float* dsm_data, int rows_dsm_data, int cols_dsm_data, long long* nan_coords, int rows_nan_coords, int cols_nan_coords)
+    {
+        interpolate_with_all_direction_mode(dsm_data, rows_dsm_data, cols_dsm_data, nan_coords, rows_nan_coords, cols_nan_coords, 0);
     }
 
     float horizontal_search(int x, int y, float* dsm_data, int rows_dsm_data, int cols_dsm_data)

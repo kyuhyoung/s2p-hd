@@ -8,6 +8,7 @@
 #   SIDE=north ./run_daegu_foundation.sh     # north만
 #   ID_GPU=0 ./run_daegu_foundation.sh       # GPU 선택 (default: 0)
 #   FILL_GAPS=0 ./run_daegu_foundation.sh    # dabeeo gap-fill 건너뜀 (default: 1)
+#   FILL_MODE=ground ./run_daegu_foundation.sh # 건물경계 gap을 ground쪽으로 채움 (halo 방지)
 
 set -uo pipefail
 
@@ -33,6 +34,7 @@ trap "kill $SUDO_PID 2>/dev/null || true" EXIT
 ID_GPU=${ID_GPU:-0}
 SIDE_FILTER=${SIDE:-}
 FILL_GAPS=${FILL_GAPS:-1}
+FILL_MODE=${FILL_MODE:-avg}   # avg | ground (건물경계 gap을 ground쪽 최솟값으로)
 
 DIR_DATA=/data/kevin_workspace/dataset_stereo
 S2P_HD_REPO=/data/kevin_workspace/etc/s2p-hd
@@ -43,7 +45,7 @@ DSM_INTERP_SO="${S2P_HD_REPO}/dsm_interpolation/dsm_interpolation.so"
 echo -e "${GREEN}=================================================${NC}"
 echo -e "${GREEN}  Daegu (K3) FoundationStereo${NC}"
 echo -e "${GREEN}    GPU       = ${ID_GPU}${NC}"
-echo -e "${GREEN}    FILL_GAPS = ${FILL_GAPS}  (1: dabeeo interp 적용, 0: 안 함)${NC}"
+echo -e "${GREEN}    FILL_GAPS = ${FILL_GAPS}  (FILL_MODE=${FILL_MODE})${NC}"
 [ -n "$SIDE_FILTER" ] && echo -e "${GREEN}    SIDE      = ${SIDE_FILTER}${NC}"
 echo -e "${GREEN}=================================================${NC}"
 
@@ -57,18 +59,19 @@ fill_dsm_gaps_host() {
     # dsm-filtered.tif → dsm-filled.tif (호스트 python에서 .so 호출)
     local in_tif=$1
     local out_tif=$2
-    stdbuf -oL python3 -u - "$in_tif" "$out_tif" "$DSM_INTERP_SO" <<'PYEOF'
+    stdbuf -oL python3 -u - "$in_tif" "$out_tif" "$DSM_INTERP_SO" "$FILL_MODE" <<'PYEOF'
 import sys, ctypes as ct
 import numpy as np
 import rasterio
 
 in_tif, out_tif, so = sys.argv[1], sys.argv[2], sys.argv[3]
+mode = 1 if (len(sys.argv) > 4 and sys.argv[4] == "ground") else 0
 lib = ct.CDLL(so)
-lib.interpolate_with_all_direction.argtypes = (
+lib.interpolate_with_all_direction_mode.argtypes = (
     ct.POINTER(ct.c_float), ct.c_int, ct.c_int,
-    ct.POINTER(ct.c_longlong), ct.c_int, ct.c_int,
+    ct.POINTER(ct.c_longlong), ct.c_int, ct.c_int, ct.c_int,
 )
-lib.interpolate_with_all_direction.restype = None
+lib.interpolate_with_all_direction_mode.restype = None
 
 with rasterio.open(in_tif) as r:
     data = r.read(1).astype(np.float32)
@@ -89,11 +92,12 @@ print(f'  invalid pixels: {n}  ({100.0*n/data.size:.1f}%)', flush=True)
 if n > 0:
     flat = np.ascontiguousarray(data.ravel())
     cflat = np.ascontiguousarray(nan_coords.ravel())
-    lib.interpolate_with_all_direction(
+    lib.interpolate_with_all_direction_mode(
         flat.ctypes.data_as(ct.POINTER(ct.c_float)),
         ct.c_int(data.shape[0]), ct.c_int(data.shape[1]),
         cflat.ctypes.data_as(ct.POINTER(ct.c_longlong)),
         ct.c_int(nan_coords.shape[0]), ct.c_int(nan_coords.shape[1]),
+        ct.c_int(mode),
     )
     data = flat.reshape(data.shape)
 

@@ -7,6 +7,7 @@ extern "C" {
     using namespace std;
 
     void interpolate_with_all_direction(float* dsm_data, int rows_dsm_data, int cols_dsm_data, long long* nan_coords, int rows_nan_coords, int cols_nan_coords);
+    void interpolate_with_all_direction_mode(float* dsm_data, int rows_dsm_data, int cols_dsm_data, long long* nan_coords, int rows_nan_coords, int cols_nan_coords, int mode);
     float horizontal_search(int x, int y, float* dsm_data, int rows_dsm_data, int cols_dsm_data);
     float vertical_search(int x, int y, float* dsm_data, int rows_dsm_data, int cols_dsm_data);
     float right_diagonal_search(int x, int y, float* dsm_data, int rows_dsm_data, int cols_dsm_data);
