@@ -29,8 +29,12 @@ def get_default_config() -> dict:
     cfg['full_img'] = False
 
     # s2p processes the images tile by tile. The tiles are squares cropped from the
-    # reference image. The width and height of the tiles are given by this param, in pixels.
-    cfg['tile_size'] = 800
+    # reference image. This param is a hard UPPER BOUND on the tile width and
+    # height, in pixels (adjust_tile_size splits the ROI with ceil, so actual
+    # tiles never exceed it). 2500 fits an 80 GB GPU for DL stereo at ~0.7 m
+    # GSD; at ~0.3 m GSD (larger disparity ranges) a 2500 px cost volume can
+    # still OOM -- lower it to ~2000 in that case.
+    cfg['tile_size'] = 2500
 
     # margins used to increase the footprint of the rectified tiles, to
     # account for poor disparity estimation close to the borders
@@ -189,6 +193,13 @@ def get_default_config() -> dict:
                                         # source. Safe for pushbroom on scenes
                                         # under ~10 km (linear approximation error
                                         # << 1 px).
+    cfg['dl_overlap_blend'] = False     # emit ply points over (tile + margin) so
+                                        # adjacent tiles overlap by 2*margin.
+                                        # plyflatten then Gaussian-averages the
+                                        # overlap, smoothing DL-stereo seams.
+                                        # Per-tile H is preserved (no geometry
+                                        # distortion). Requires horizontal_margin
+                                        # and/or vertical_margin > 0.
 
     # this option allows to refine the disparity computed by the fast stereosgm_gpu 
     # it only works in combination with  cfg['matching_algorithm'] = 'stereosgm_gpu'
