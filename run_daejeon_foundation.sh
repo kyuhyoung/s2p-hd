@@ -163,7 +163,7 @@ echo '=== ${part} done ==='
 
     stdbuf -oL sudo docker run --rm \
         --user "$(id -u):$(id -g)" \
-        --gpus "device=${ID_GPU}" \
+        --gpus "device=${ID_GPUS:-$ID_GPU}" \
         --shm-size=64g \
         --net=host \
         -e HOME=/tmp \

@@ -181,6 +181,27 @@ def _apply_deterministic_mode():
     _deterministic_applied = True
 
 
+def resolve_device(cfg):
+    """
+    Resolve the CUDA device for this worker process.
+
+    cfg['dl_stereo_device'] accepts either a single device ("cuda:0") or a
+    comma-separated list ("cuda:0,cuda:1,cuda:2,cuda:3") for multi-GPU tile
+    parallelism: each multiprocessing Pool worker picks one device by its
+    worker identity (worker n -> devices[(n-1) % len]). With
+    max_processes_stereo_matching == number of devices, this gives exactly
+    one worker per GPU.
+    """
+    device = cfg['dl_stereo_device']
+    if ',' not in str(device):
+        return device
+    devices = [d.strip() for d in str(device).split(',') if d.strip()]
+    import multiprocessing
+    ident = multiprocessing.current_process()._identity
+    idx = (ident[0] - 1) if ident else 0
+    return devices[idx % len(devices)]
+
+
 def load_model(cfg):
     """
     Load a DL stereo model. Caches the model so it's loaded only once.
@@ -190,7 +211,7 @@ def load_model(cfg):
 
     model_name = cfg['dl_stereo_model']
     ckpt = cfg['dl_stereo_ckpt']
-    device = cfg['dl_stereo_device']
+    device = resolve_device(cfg)
     dav2_path = cfg.get('dl_depth_anything_v2_path')
 
     _patch_grid_sample_cudnn_fallback()
@@ -314,7 +335,7 @@ def _predict_foundationstereo(model, imgL, imgR, device):
 def _run_model(cfg, model, imgL, imgR):
     """Run a single forward pass of the DL model. Returns raw model disparity (not sign-flipped)."""
     model_name = cfg['dl_stereo_model']
-    device = cfg['dl_stereo_device']
+    device = resolve_device(cfg)
 
     if model_name == 'monster':
         return _predict_monster(model, imgL, imgR, device)

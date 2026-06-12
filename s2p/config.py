@@ -167,6 +167,10 @@ def get_default_config() -> dict:
     cfg['dl_stereo_model'] = 'monster'  # 'monster', 'stereoanywhere', 'foundationstereo'
     cfg['dl_stereo_ckpt'] = None        # path to model checkpoint
     cfg['dl_depth_anything_v2_path'] = None  # path to Depth Anything V2 (for monster/stereoanywhere)
+    # single device ("cuda:0") or comma-separated list ("cuda:0,cuda:1,...")
+    # for multi-GPU tile parallelism: each stereo-matching worker picks one
+    # device by its worker id. Set max_processes_stereo_matching to the number
+    # of devices so there is exactly one worker per GPU.
     cfg['dl_stereo_device'] = 'cuda:0'
     cfg['dl_border_trim'] = 32          # border pixels to invalidate (neural aperture problem)
     cfg['dl_lr_check'] = True           # left-right consistency check
