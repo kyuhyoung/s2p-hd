@@ -200,13 +200,17 @@ def adjust_tile_size(cfg) -> Tuple[int, int]:
     Adjust the size of the tiles.
     """
 
+    # ceil (not round) for the tile counts: cfg['tile_size'] is a hard upper
+    # bound on the tile dimensions. With round, e.g. roi 5000 / tile_size 2000
+    # gives 2 tiles of 2500 px (> tile_size) -- enough to OOM GPU stereo
+    # matchers whose cost-volume memory scales with tile area. The second ceil
+    # keeps all tiles equally sized within that bound.
     tile_w = min(cfg['roi']['w'], cfg['tile_size'])  # tile width
-    ntx = int(np.round(float(cfg['roi']['w']) / tile_w))
-    # ceil so that, if needed, the last tile is slightly smaller
+    ntx = int(np.ceil(float(cfg['roi']['w']) / tile_w))
     tile_w = int(np.ceil(float(cfg['roi']['w']) / ntx))
 
     tile_h = min(cfg['roi']['h'], cfg['tile_size'])  # tile height
-    nty = int(np.round(float(cfg['roi']['h']) / tile_h))
+    nty = int(np.ceil(float(cfg['roi']['h']) / tile_h))
     tile_h = int(np.ceil(float(cfg['roi']['h']) / nty))
 
     logger.info('tile size: {} {}'.format(tile_w, tile_h))
