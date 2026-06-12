@@ -14,6 +14,8 @@
 #   PART=upper ./run_daejeon_foundation.sh      # upper만
 #   PART=lower ./run_daejeon_foundation.sh      # lower만
 #   ID_GPU=7 ./run_daejeon_foundation.sh        # GPU 선택 (default: 7)
+#   ID_GPUS=4,5,6,7 ./run_daejeon_foundation.sh  # multi-GPU 타일 병렬 (stereo matching)
+#   MAXPROC=8 ./run_daejeon_foundation.sh        # CPU 단계 병렬 워커 수
 #   FILL_GAPS=0 ./run_daejeon_foundation.sh     # dabeeo gap-fill 건너뜀
 #   FILL_MODE=ground ./run_daejeon_foundation.sh # 건물경계 gap을 ground쪽으로 채움 (halo 방지)
 
@@ -39,6 +41,8 @@ trap "kill $SUDO_PID 2>/dev/null || true" EXIT
 
 # === 설정 ===
 ID_GPU=${ID_GPU:-7}
+ID_GPUS=${ID_GPUS:-}        # 예: "4,5,6,7" — 주어지면 multi-GPU 모드 (ID_GPU 무시)
+MAXPROC=${MAXPROC:-}        # 예: 8 — 주어지면 config의 max_processes 오버라이드
 PART_FILTER=${PART:-}
 FILL_GAPS=${FILL_GAPS:-1}
 FILL_MODE=${FILL_MODE:-avg}   # avg | ground (건물경계 gap을 ground쪽 최솟값으로)
@@ -51,7 +55,12 @@ DSM_INTERP_SO="${S2P_HD_REPO}/dsm_interpolation/dsm_interpolation.so"
 
 echo -e "${GREEN}=================================================${NC}"
 echo -e "${GREEN}  Daejeon (PNEO4 tri-stereo) FoundationStereo${NC}"
-echo -e "${GREEN}    GPU       = ${ID_GPU}${NC}"
+if [ -n "$ID_GPUS" ]; then
+    echo -e "${GREEN}    GPUs      = ${ID_GPUS}  (multi-GPU tile parallel)${NC}"
+else
+    echo -e "${GREEN}    GPU       = ${ID_GPU}${NC}"
+fi
+[ -n "$MAXPROC" ] && echo -e "${GREEN}    MAXPROC   = ${MAXPROC}${NC}"
 echo -e "${GREEN}    FILL_GAPS = ${FILL_GAPS}  (FILL_MODE=${FILL_MODE})${NC}"
 [ -n "$PART_FILTER" ] && echo -e "${GREEN}    PART      = ${PART_FILTER}${NC}"
 echo -e "${GREEN}=================================================${NC}"
@@ -149,6 +158,27 @@ run_part() {
         count=$((count + 1))
     done
     echo -e "${GREEN}  RGB ${count}장 준비 완료${NC}"
+
+    # === GPU/병렬 설정을 config에 반영 ===
+    python3 - "$cfg_host" "$ID_GPUS" "$MAXPROC" <<'PYCFG'
+import json, sys
+cfg_path, gpus, maxproc = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(cfg_path))
+if gpus:
+    n = len([g for g in gpus.split(',') if g.strip()])
+    # 컨테이너에는 0..n-1로 재매핑되어 보임
+    d['dl_stereo_device'] = ','.join(f'cuda:{i}' for i in range(n))
+    d['max_processes_stereo_matching'] = n
+else:
+    d['dl_stereo_device'] = 'cuda:0'
+    d['max_processes_stereo_matching'] = None
+if maxproc:
+    d['max_processes'] = int(maxproc)
+json.dump(d, open(cfg_path, 'w'), indent=2)
+print(f"  config: dl_stereo_device={d['dl_stereo_device']}, "
+      f"max_processes_stereo_matching={d['max_processes_stereo_matching']}, "
+      f"max_processes={d.get('max_processes')}")
+PYCFG
 
     # === 2) s2p foundation ===
     echo -e "${YELLOW}  [2/3] s2p foundation stereo...${NC}"
