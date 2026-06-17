@@ -171,7 +171,10 @@ if gpus:
     d['max_processes_stereo_matching'] = n
 else:
     d['dl_stereo_device'] = 'cuda:0'
-    d['max_processes_stereo_matching'] = None
+    # single GPU: matching MUST stay serial (1 worker). Leaving this None lets
+    # s2p fall back to max_processes (=MAXPROC), which would cram MAXPROC
+    # foundation models onto one GPU -> OOM. CPU stages still use max_processes.
+    d['max_processes_stereo_matching'] = 1
 if maxproc:
     d['max_processes'] = int(maxproc)
 json.dump(d, open(cfg_path, 'w'), indent=2)
