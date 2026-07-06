@@ -471,6 +471,34 @@ def disparity_range(cfg, rpc1, rpc2, x, y, w, h, H1, H2, matches, A=None):
             sift_disp = None
         logging.info("SIFT disparity range: %s", sift_disp)
 
+        # SIFT samples the ground densely but often finds ZERO matches on tall
+        # untextured roofs (glass/concrete towers), so a pure-SIFT range hugs
+        # the ground and tall buildings fall outside the matcher's search
+        # window. On the long-baseline pair of a triplet they then flatten to
+        # ground level, and fusion discards the roofs the short pair did get
+        # (Daejeon lower: 145 m towers need ~290 px on pair 2 while the SIFT
+        # range covered ~80 m). Extend the range upward by the disparity span
+        # of `disp_range_building_margin` metres, converted with THIS pair's
+        # own alt-to-disp sensitivity (signed, so the correct end grows).
+        bm = cfg.get('disp_range_building_margin', 0)
+        if bm > 0 and sift_disp is not None:
+            alt = rpc_utils.altitude_range(cfg, rpc1, x, y, w, h)
+            h0 = float(np.mean(alt))
+            d_lo = rpc_utils.altitude_range_to_disp_range(h0, h0, rpc1, rpc2,
+                                                          x, y, w, h, H1, H2, A)
+            d_hi = rpc_utils.altitude_range_to_disp_range(h0 + bm, h0 + bm, rpc1,
+                                                          rpc2, x, y, w, h, H1, H2, A)
+            up = float(np.mean(d_hi) - np.mean(d_lo))
+            # BOTH sides, not just the computed "up" side: the per-tile
+            # rectification orientation (det sign of H from SIFT matches) can
+            # flip tile-to-tile, so the sign of alt->disp is not reliable per
+            # tile (Daejeon lower: tiles 5 km apart got opposite signs and the
+            # one-sided extension missed the towers on two of three sites).
+            span = abs(up)
+            sift_disp = (sift_disp[0] - span, sift_disp[1] + span)
+            logging.info("building margin %s m -> disp extension +-%.1f px, range %s",
+                         bm, span, sift_disp)
+
     # compute altitude range disparity if needed
     if cfg['disp_range_method'] == 'fixed_altitude_range':
         alt_disp = rpc_utils.altitude_range_to_disp_range(cfg['alt_min'],
@@ -553,7 +581,7 @@ def rectification_homographies(matches, x, y, w, h, debug=False):
 
 
 def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift_matches=None,
-                 method='rpc', hmargin=0, vmargin=0):
+                 method='rpc', hmargin=0, vmargin=0, pair_idx=1):
     """
     Rectify a ROI in a pair of images.
 
@@ -610,9 +638,16 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
     # tile still computes its own disparity range and hmargin below, then
     # composes T_tile on top of the global H, which preserves per-tile
     # output framing without introducing per-tile rectification drift.
-    if cfg.get('_global_H1') is not None and cfg.get('_global_H2') is not None:
-        H1 = cfg['_global_H1'].copy()
-        H2 = cfg['_global_H2'].copy()
+    _gH1 = cfg.get('_global_H1')
+    _gH2 = cfg.get('_global_H2')
+    if (_gH1 is not None and _gH2 is not None
+            and pair_idx in _gH1 and pair_idx in _gH2):
+        # Per-pair global H: each stereo pair (ref vs image i) has its own
+        # epipolar geometry, so it needs its own global rectification. Reusing
+        # pair 1's H for pair 2 yields garbage heights for pair 2 (then fusion
+        # discards everything where the pairs disagree).
+        H1 = _gH1[pair_idx].copy()
+        H2 = _gH2[pair_idx].copy()
         F = None
         _used_global_H = True
         # rectification_homographies() normalizes H so that the ROI bbox it
@@ -635,7 +670,7 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         # per tile (not once at pre-compute) because cfg.pop removes it
         # after each tile's flip step.
         if (cfg.get('matching_algorithm') == 'dl_stereo' and
-                _dl_global_flip_decision is True):
+                cfg.get('_dl_global_flip', {}).get(pair_idx, False)):
             cfg['_dl_flip_images'] = True
     else:
         _used_global_H = False
@@ -691,11 +726,21 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
                 # 'always', 'never'}; default 'auto' uses the cached first-tile
                 # decision. (global declared at top of rectify_pair.)
                 flip_mode = cfg.get('dl_flip_mode', 'auto')
+                # Flip decided ONCE for the whole ROI in main() and shared via
+                # cfg (per pair). rectify_pair runs in worker processes that may
+                # be spawned (module globals reset to None), so without this each
+                # worker's first tile decides independently; in borderline-
+                # geometry regions different workers then pick opposite flips,
+                # producing garbage altitudes in some tiles that fusion discards
+                # (near-empty DSM). cfg is pickled to every worker -> consistent.
+                _cfg_flip = cfg.get('_dl_flip_decision', {}).get(pair_idx)
 
                 if flip_mode == 'always':
                     need_flip = True
                 elif flip_mode == 'never':
                     need_flip = False
+                elif _cfg_flip is not None:
+                    need_flip = _cfg_flip
                 elif _dl_global_flip_decision is not None:
                     need_flip = _dl_global_flip_decision
                     logger.info('using cached dl flip decision: flip=%s', need_flip)
@@ -726,6 +771,14 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
             else:
                 H2 = register_horizontally_translation(sift_matches, H1, H2,
                                                        debug=debug)
+
+    # Under global rectification we deliberately do NOT apply any per-tile
+    # translation to H2: every tile must keep the byte-identical global H1/H2
+    # so adjacent tiles reconstruct a single continuous surface (no seams).
+    # The disparity stays uncentered (large offset), which widens the rectified
+    # tile and the DL cost volume -- that is bounded purely by tile_size, not
+    # by mutating H. (A per-tile H2 shift was tried and reintroduced a seam at
+    # every tile boundary, so it is rejected.)
 
     # DL continuous-H-field MVP. Blend this tile's (H1, H2) with whichever
     # neighbor tiles are already cached, then store the result for future
