@@ -138,10 +138,24 @@ def get_default_config() -> dict:
     # threshold (in meters) used for the fusion of two dems in triplet processing
     cfg['fusion_thresh'] = 3
 
+    # vertical registration of the pair height maps before fusion (subtract the
+    # per-pair global mean height). Default OFF: with BA'd inputs the true
+    # per-pair bias is sub-metre, while the estimate gets poisoned by
+    # canopy/water mask differences between pairs (Daejeon lower full: 6-11 m
+    # spurious offset -> average_if_close discards most good pixels).
+    cfg['fusion_vertical_registration'] = False
+
     cfg['rpc_alt_range_scale_factor'] = 1
 
     # method to compute the disparity range: "sift", "exogenous", "wider_sift_exogenous", "fixed_pixel_range", "fixed_altitude_range"
     cfg['disp_range_method'] = "wider_sift_exogenous"
+
+    # extra building headroom (metres) added on top of the SIFT disparity
+    # range, converted per pair via the RPCs. SIFT reliably samples the ground
+    # but often has no matches on tall untextured roofs, so without this the
+    # search window excludes tall buildings (fatal on long-baseline pairs).
+    # 0 disables (upstream behaviour).
+    cfg['disp_range_building_margin'] = 0
     cfg['disp_range_exogenous_low_margin'] = -10
     cfg['disp_range_exogenous_high_margin'] = +100
 
@@ -197,6 +211,13 @@ def get_default_config() -> dict:
                                         # source. Safe for pushbroom on scenes
                                         # under ~10 km (linear approximation error
                                         # << 1 px).
+    cfg['inter_tile_align'] = False     # 5e) planar inter-tile height registration.
+                                        # Default OFF: the edge LS only constrains
+                                        # neighbour differences, so on large tile
+                                        # grids the low-frequency modes drift into
+                                        # a smooth multi-metre warp (Daejeon upper
+                                        # full 10x10: -60..+28 m vs SRTM; same data
+                                        # without 5e: flat -1.2 +/- 6.8 m).
     cfg['dl_overlap_blend'] = False     # emit ply points over (tile + margin) so
                                         # adjacent tiles overlap by 2*margin.
                                         # plyflatten then Gaussian-averages the

@@ -249,7 +249,8 @@ def rectification_pair(cfg, tile: Tile, i: int) -> bool:
                                                                      rect1, rect2, A, m,
                                                                      method=cfg['rectification_method'],
                                                                      hmargin=cfg['horizontal_margin'],
-                                                                     vmargin=cfg['vertical_margin'])
+                                                                     vmargin=cfg['vertical_margin'],
+                                                                     pair_idx=i)
 
     if success:
         np.savetxt(os.path.join(out_dir, 'H_ref.txt'), H1, fmt='%12.6f')
@@ -384,7 +385,19 @@ def disparity_to_height(cfg, tile: Tile, i: int) -> None:
         mask_rect_img = f.read().squeeze()
     with rasterio.open(mask_orig, 'r') as f:
         mask_orig_img = f.read().squeeze()
-    height_map = triangulation.height_map(x, y, w, h, rpc1, rpc2, H_ref, H_sec,
+    # DL-stereo overlap blending (3-image path): compute the height map over
+    # (tile + margin) so adjacent tiles OVERLAP by 2*margin. plys_to_dsm then
+    # averages that overlap, so the tile boundary is filled by both tiles'
+    # reliable interiors instead of a hard join over their (border-trimmed)
+    # edges -- which is what produced localized boundary bumps. Mirrors the
+    # 2-image disparity_to_ply path.
+    hm = cfg.get('horizontal_margin', 0) if cfg.get('dl_overlap_blend', False) else 0
+    vm = cfg.get('vertical_margin', 0) if cfg.get('dl_overlap_blend', False) else 0
+    if hm or vm:
+        mask_orig_img = np.pad(mask_orig_img, ((vm, vm), (hm, hm)),
+                               constant_values=1)
+    height_map = triangulation.height_map(x - hm, y - vm, w + 2 * hm, h + 2 * vm,
+                                          rpc1, rpc2, H_ref, H_sec,
                                           disp_img, mask_rect_img,
                                           mask_orig_img,
                                           A=np.loadtxt(pointing))
@@ -458,12 +471,27 @@ def disparity_to_ply(cfg, tile: Tile) -> None:
     with rasterio.open(mask_orig, 'r') as f:
         mask_orig_img = f.read().squeeze()
 
+    # DL-stereo overlap blending: emit points over the rectified area that
+    # corresponds to (tile + margin) so that adjacent tiles overlap by 2*margin.
+    # plyflatten then Gaussian-averages the overlap in plys_to_dsm, smoothing
+    # the tile-boundary seam. Per-tile H is preserved.
+    img_bbx = (x, x+w, y, y+h)
+    mask_for_c = mask_orig_img
+    if cfg.get('dl_overlap_blend', False):
+        hm = cfg.get('horizontal_margin', 0)
+        vm = cfg.get('vertical_margin', 0)
+        if hm > 0 or vm > 0:
+            img_bbx = (x-hm, x+w+hm, y-vm, y+h+vm)
+            mask_for_c = np.pad(mask_orig_img,
+                                ((vm, vm), (hm, hm)),
+                                constant_values=1)
+
     out_crs = geographiclib.pyproj_crs(cfg['out_crs'])
     xyz_array, err = triangulation.disp_to_xyz(rpc1, rpc2,
                                                np.loadtxt(H_ref), np.loadtxt(H_sec),
                                                disp_img, mask_rect_img,
-                                               img_bbx=(x, x+w, y, y+h),
-                                               mask_orig=mask_orig_img,
+                                               img_bbx=img_bbx,
+                                               mask_orig=mask_for_c,
                                                A=np.loadtxt(pointing),
                                                out_crs=out_crs)
 
@@ -498,33 +526,185 @@ def disparity_to_ply(cfg, tile: Tile) -> None:
 
 
 def mean_heights(cfg, tile: Tile) -> None:
-    w, h = tile.coordinates[2:]
     n = len(cfg['images']) - 1
-    maps = np.empty((h, w, n))
-    for i in range(n):
+    # Read each pair's height map at its actual size. With dl_overlap_blend the
+    # per-pair height maps cover (tile + margin), so we must not assume the bare
+    # (w, h) tile shape here.
+    paths = [os.path.join(tile.dir, 'pair_{}'.format(i + 1), 'height_map.tif')
+             for i in range(n)]
+    shp = None
+    for p in paths:
+        if os.path.exists(p):
+            with rasterio.open(p) as f:
+                shp = (f.height, f.width)
+            break
+    if shp is None:        # no pair produced a height map for this tile
+        return
+    maps = np.full((shp[0], shp[1], n), np.nan)
+    for i, p in enumerate(paths):
         try:
-            with rasterio.open(os.path.join(tile.dir, 'pair_{}'.format(i + 1),
-                                            'height_map.tif'), 'r') as f:
+            with rasterio.open(p, 'r') as f:
                 maps[:, :, i] = f.read(1)
         except RuntimeError:  # the file is not there
-            maps[:, :, i] *= np.nan
+            pass
 
     validity_mask = maps.sum(axis=2)  # sum to propagate nan values
     validity_mask += 1 - validity_mask  # 1 on valid pixels, and nan on invalid
 
-    # save the n mean height values to a txt file in the tile directory
+    # save the n mean height values to a txt file in the tile directory.
+    # nanmedian, NOT nanmean: these run on the RAW pair height maps (before
+    # cargarse_basura), where water/forest garbage differs per pair. A mean
+    # lets that garbage skew each pair's offset differently (Daejeon lower
+    # full: 10.9 m spurious pair offset vs 0.55 m true), and merge_n then
+    # registers the pairs apart so average_if_close discards most pixels.
     np.savetxt(os.path.join(tile.dir, 'local_mean_heights.txt'),
-               [np.nanmean(validity_mask * maps[:, :, i]) for i in range(n)])
+               [np.nanmedian(validity_mask * maps[:, :, i]) for i in range(n)])
 
 
 def global_mean_heights(cfg, tiles: List[Tile]) -> None:
-    local_mean_heights = [np.loadtxt(os.path.join(t.dir, 'local_mean_heights.txt'))
-                          for t in tiles]
-    global_mean_heights = np.nanmean(local_mean_heights, axis=0)
+    # Tiles whose matching produced no valid points never wrote
+    # local_mean_heights.txt; skip them instead of crashing (common when the
+    # ROI/full image extends past the stereo overlap, e.g. edge/water tiles).
+    local_mean_heights = []
+    for t in tiles:
+        p = os.path.join(t.dir, 'local_mean_heights.txt')
+        if os.path.exists(p):
+            local_mean_heights.append(np.loadtxt(p))
+    if not local_mean_heights:
+        raise RuntimeError("no tile produced local_mean_heights.txt (no valid stereo)")
+    # median across tiles for the same robustness reason as the local step:
+    # tiles where one pair matched garbage (water/forest) must not drag the
+    # per-pair global offset away from the other pair's.
+    global_mean_heights = np.nanmedian(local_mean_heights, axis=0)
     for i in range(len(cfg['images']) - 1):
         np.savetxt(os.path.join(cfg['out_dir'],
                                 'global_mean_height_pair_{}.txt'.format(i+1)),
                    [global_mean_heights[i]])
+
+
+def align_tile_heights(cfg, tiles: List[Tile]) -> None:
+    """
+    Inter-tile height registration.
+
+    s2p tiles the ROI and reconstructs each tile independently; the 5b/5c
+    "pairwise height offset" steps only register the image PAIRS within a tile,
+    never adjacent TILES to each other. With per-tile rectification each tile
+    therefore has its own small absolute-height bias, which appears as a step
+    (seam) at every tile boundary in the merged DSM.
+
+    Root fix: measure the median height step across each shared tile edge
+    (difference of the two adjacent boundary lines, which cancels the terrain
+    along the edge), then solve a single global least-squares for one constant
+    offset per tile (gauge: mean offset = 0) and subtract it from each tile's
+    height map. Rectification is untouched, so per-tile sharpness is preserved
+    while the boundaries become continuous.
+    """
+    coords = [t.coordinates for t in tiles]            # (x, y, w, h) per tile
+    pos = {(c[0], c[1]): i for i, c in enumerate(coords)}
+    paths = [os.path.join(t.dir, 'height_map.tif') for t in tiles]
+
+    arrs = []
+    for p in paths:
+        if os.path.exists(p):
+            with rasterio.open(p) as f:
+                arrs.append(f.read(1).astype(np.float64))
+        else:
+            arrs.append(None)
+
+    # With dl_overlap_blend the height maps cover (tile + margin), so adjacent
+    # tiles overlap by 2*margin and we measure the offset over that shared
+    # region (identical ground points). Without overlap we fall back to the two
+    # adjacent boundary lines.
+    hm = cfg.get('horizontal_margin', 0) if cfg.get('dl_overlap_blend', False) else 0
+    vm = cfg.get('vertical_margin', 0) if cfg.get('dl_overlap_blend', False) else 0
+
+    # PLANAR per-tile correction. A single constant offset cannot remove a
+    # seam whose step VARIES along the shared edge (a relative tilt between
+    # tiles, which cross-date illumination/matching differences produce). So
+    # each tile gets a plane  p_i(u,v) = a_i + b_i*u + c_i*v  (u,v normalized
+    # to [-0.5, 0.5] over the tile). We sample several points along every
+    # shared edge, require the two tiles to agree there after subtracting their
+    # planes, and solve one global least-squares for all (a,b,c) with a gauge
+    # (mean a = mean b = mean c = 0, i.e. no global plane is invented).
+    n = len(tiles)
+    NP = 3            # params per tile: offset, tilt-u, tilt-v
+    K = 16           # samples along each shared edge
+    BAND = 3         # half-width of the median window at each sample
+
+    def uv(shape, col, row):
+        H_, W_ = shape
+        return (col + 0.5) / W_ - 0.5, (row + 0.5) / H_ - 0.5
+
+    rows, ds = [], []
+    nedge = 0
+    for i, (x, y, w, h) in enumerate(coords):
+        A = arrs[i]
+        if A is None:
+            continue
+        Ha, Wa = A.shape
+        # right neighbour at (x+w, y): A's right edge vs B's left edge
+        j = pos.get((x + w, y))
+        if j is not None and arrs[j] is not None:
+            B = arrs[j]; Hb, Wb = B.shape; mrow = min(Ha, Hb); nedge += 1
+            for k in range(K):
+                r = int((k + 0.5) / K * mrow)
+                av = np.nanmedian(A[max(0, r - BAND):r + BAND + 1, -2 * max(hm, 1):]) if hm else \
+                     np.nanmedian(A[max(0, r - BAND):r + BAND + 1, -BAND:])
+                bv = np.nanmedian(B[max(0, r - BAND):r + BAND + 1, :2 * hm]) if hm else \
+                     np.nanmedian(B[max(0, r - BAND):r + BAND + 1, :BAND])
+                if not (np.isfinite(av) and np.isfinite(bv)):
+                    continue
+                uA, vA = uv((Ha, Wa), Wa - 1, r); uB, vB = uv((Hb, Wb), 0, r)
+                eq = np.zeros(NP * n)
+                eq[NP*j] += 1; eq[NP*j+1] += uB; eq[NP*j+2] += vB
+                eq[NP*i] -= 1; eq[NP*i+1] -= uA; eq[NP*i+2] -= vA
+                rows.append(eq); ds.append(float(bv - av))   # planeB-planeA = B-A
+        # bottom neighbour at (x, y+h): A's bottom edge vs B's top edge
+        j = pos.get((x, y + h))
+        if j is not None and arrs[j] is not None:
+            B = arrs[j]; Hb, Wb = B.shape; mcol = min(Wa, Wb); nedge += 1
+            for k in range(K):
+                c = int((k + 0.5) / K * mcol)
+                av = np.nanmedian(A[-2 * vm:, max(0, c - BAND):c + BAND + 1]) if vm else \
+                     np.nanmedian(A[-BAND:, max(0, c - BAND):c + BAND + 1])
+                bv = np.nanmedian(B[:2 * vm, max(0, c - BAND):c + BAND + 1]) if vm else \
+                     np.nanmedian(B[:BAND, max(0, c - BAND):c + BAND + 1])
+                if not (np.isfinite(av) and np.isfinite(bv)):
+                    continue
+                uA, vA = uv((Ha, Wa), c, Ha - 1); uB, vB = uv((Hb, Wb), c, 0)
+                eq = np.zeros(NP * n)
+                eq[NP*j] += 1; eq[NP*j+1] += uB; eq[NP*j+2] += vB
+                eq[NP*i] -= 1; eq[NP*i+1] -= uA; eq[NP*i+2] -= vA
+                rows.append(eq); ds.append(float(bv - av))
+
+    if rows:
+        for pp in range(NP):                              # gauge: mean of each param = 0
+            g = np.zeros(NP * n); g[pp::NP] = 1.0
+            rows.append(g); ds.append(0.0)
+        sol, *_ = np.linalg.lstsq(np.asarray(rows), np.asarray(ds), rcond=None)
+        params = sol.reshape(n, NP)
+    else:
+        params = np.zeros((n, NP))
+
+    logger.info('inter-tile PLANAR alignment: %d edges, %d samples | '
+                'offset std %.3f m, tilt-u std %.3f, tilt-v std %.3f',
+                nedge, len(ds) - NP if rows else 0,
+                float(np.std(params[:, 0])), float(np.std(params[:, 1])),
+                float(np.std(params[:, 2])))
+
+    # subtract each tile's correction plane from its height map.
+    for i, p in enumerate(paths):
+        if arrs[i] is None or not np.all(np.isfinite(params[i])) or not np.any(params[i]):
+            continue
+        a_, b_, c_ = params[i]
+        with rasterio.open(p) as f:
+            prof = f.profile; data = f.read(1)
+        H_, W_ = data.shape
+        u = (np.arange(W_) + 0.5) / W_ - 0.5
+        v = (np.arange(H_) + 0.5) / H_ - 0.5
+        plane = (a_ + b_ * u[None, :] + c_ * v[:, None]).astype(np.float32)
+        with rasterio.open(p, 'w', **prof) as f:
+            f.write(data - plane, 1)
 
 
 def heights_fusion(cfg, tile: Tile) -> None:
@@ -538,17 +718,33 @@ def heights_fusion(cfg, tile: Tile) -> None:
     height_maps = [os.path.join(tile_dir, 'pair_%d' % (i + 1), 'height_map.tif')
                    for i in range(len(cfg['images']) - 1)]
 
+    # empty tile (no pair produced a height map, e.g. outside stereo overlap):
+    # nothing to fuse, skip so downstream (which already tolerates a missing
+    # tile height_map.tif / cloud.ply) just leaves a gap here.
+    height_maps = [h for h in height_maps if os.path.exists(h)]
+    if not height_maps:
+        return
+
     # remove spurious matches
     if cfg['cargarse_basura']:
         for img in height_maps:
             common.cargarse_basura(img, img)
 
     # load global mean heights
-    global_mean_heights = []
-    for i in range(len(cfg['images']) - 1):
-        x = np.loadtxt(os.path.join(cfg['out_dir'],
-                                    'global_mean_height_pair_{}.txt'.format(i+1)))
-        global_mean_heights.append(x)
+    if cfg.get('fusion_vertical_registration', False):
+        global_mean_heights = []
+        for i in range(len(cfg['images']) - 1):
+            x = np.loadtxt(os.path.join(cfg['out_dir'],
+                                        'global_mean_height_pair_{}.txt'.format(i+1)))
+            global_mean_heights.append(x)
+    else:
+        # BA'd inputs: the true per-pair vertical bias is sub-metre (Daejeon
+        # urban pixelwise: 0.13-0.55 m), while ESTIMATING it from per-pair
+        # marginal stats gets poisoned by canopy/water mask differences
+        # (Daejeon lower full: 6-11 m spurious offset, which shifts the
+        # average_if_close band off the data and discards most good pixels).
+        # Trust the BA and skip vertical registration.
+        global_mean_heights = [0.0] * (len(cfg['images']) - 1)
 
     # merge the height maps (applying mean offset to register)
     fusion.merge_n(os.path.join(tile_dir, 'height_map.tif'), height_maps,
@@ -567,27 +763,44 @@ def heights_to_ply(cfg, tile: Tile) -> None:
     Args:
         tile: a Tile that provides all you need to process a tile
     """
-    # merge the n-1 height maps of the tile (n = nb of images)
-    heights_fusion(cfg, tile)
-
     # compute a ply from the merged height map
     out_dir = tile.dir
     x, y, w, h = tile.coordinates
     plyfile = os.path.join(out_dir, 'cloud.ply')
     height_map = os.path.join(out_dir, 'height_map.tif')
 
+    # The merged + inter-tile-aligned height map is normally produced by the
+    # separate 5d/5e passes. Fall back to fusing here if it is missing (e.g.
+    # heights_to_ply invoked standalone).
+    if not os.path.exists(height_map):
+        heights_fusion(cfg, tile)
+
+    # empty tile: heights_fusion produced no merged height_map.tif; no cloud.
+    # downstream plys_to_dsm already tolerates a missing cloud.ply.
+    if not os.path.exists(height_map):
+        return
+
+    # Overlap blending: the merged height map covers (tile + margin), so emit
+    # the cloud over the same (x-hm .. x+w+hm, y-vm .. y+h+vm) window. Adjacent
+    # tiles then overlap by 2*margin and plys_to_dsm averages it (seamless).
+    hm = cfg.get('horizontal_margin', 0) if cfg.get('dl_overlap_blend', False) else 0
+    vm = cfg.get('vertical_margin', 0) if cfg.get('dl_overlap_blend', False) else 0
+    cx, cy, cw, ch = x - hm, y - vm, w + 2 * hm, h + 2 * vm
+
     if cfg['images'][0]['clr']:
         with rasterio.open(cfg['images'][0]['clr'], "r") as f:
-            colors = f.read(window=((y, y + h), (x, x + w)))
+            colors = f.read(window=((cy, cy + ch), (cx, cx + cw)),
+                            boundless=True, fill_value=0)
     else:
         with rasterio.open(cfg['images'][0]['img'], "r") as f:
-            colors = f.read(window=((y, y + h), (x, x + w)))
+            colors = f.read(window=((cy, cy + ch), (cx, cx + cw)),
+                            boundless=True, fill_value=0)
 
         colors = common.linear_stretching_and_quantization_8bit(colors)
 
     out_crs = geographiclib.pyproj_crs(cfg['out_crs'])
     xyz_array = triangulation.height_map_to_xyz(height_map,
-                                                cfg['images'][0]['rpcm'], x, y,
+                                                cfg['images'][0]['rpcm'], cx, cy,
                                                 out_crs)
 
     # 3D filtering
@@ -658,6 +871,11 @@ def plys_to_dsm(cfg, tile: Tile) -> None:
     # this option controls the type of aggregation
     # TODO: this interface is VERY VERY ugly AND FRAGILE and will be reworked within a new plyflatten
     use_max_aggregation = cfg['dsm_aggregation_with_max']
+    # NOTE: keep MAX aggregation WITHIN each tile (rooftops stay crisp) even
+    # under dl_overlap_blend. The inter-tile blending is now done by the
+    # distance-feathered global merge (merge_tiles_feather), which weights each
+    # tile by distance to its border so the reliable interior wins over the
+    # unreliable edge -- no equal-average corner artifacts.
     raster, profile = plyflatten_from_plyfiles_list(clouds,
                                                     resolution=r,
                                                     roi=roi,
@@ -837,6 +1055,78 @@ def merge_tiles_mp(nb_workers, global_dst_path, save_folder,
     return
 
 
+def merge_tiles_feather(paths, bounds, res, dst_path, feather_radius=48):
+    """
+    Mosaic tile DSMs with distance-to-edge FEATHERING instead of a hard
+    max/first pick.
+
+    Each per-tile DSM is unreliable near its border (neural aperture /
+    dl_border_trim), and the default 'max' merge picks whichever tile is
+    higher in the small inter-tile overlap -- so a slightly-too-high border
+    pixel wins and leaves a 1-px boundary seam. Here every pixel is weighted by
+    its distance to that tile's rectangular border (capped at feather_radius);
+    overlapping tiles are blended by a weighted average. The unreliable border
+    is down-weighted, the full-weight interior keeps its sharpness, and the
+    boundary becomes continuous.
+    """
+    from rasterio.transform import from_origin
+    if bounds is not None:
+        left, bottom, right, top = bounds
+    else:
+        ls, bs, rs, ts = [], [], [], []
+        for p in paths:
+            with rasterio.open(p) as s:
+                b = s.bounds
+                ls.append(b.left); bs.append(b.bottom); rs.append(b.right); ts.append(b.top)
+        left, bottom, right, top = min(ls), min(bs), max(rs), max(ts)
+
+    W = int(round((right - left) / res))
+    H = int(round((top - bottom) / res))
+    with rasterio.open(paths[0]) as s:
+        crs = s.crs
+        profile = s.profile.copy()
+    transform = from_origin(left, top, res, res)
+
+    accum_wz = np.zeros((H, W), dtype=np.float64)
+    accum_w = np.zeros((H, W), dtype=np.float64)
+
+    for p in paths:
+        with rasterio.open(p) as s:
+            z = s.read(1).astype(np.float64)
+            nd = s.nodata
+            b = s.bounds
+        th, tw = z.shape
+        valid = np.isfinite(z)
+        if nd is not None and not np.isnan(nd):
+            valid &= (z != nd)
+        # distance to the rectangular tile border (NOT to interior holes, so the
+        # interior keeps full weight); +1 so a single-tile pixel still counts.
+        ii = np.minimum(np.arange(th), th - 1 - np.arange(th))
+        jj = np.minimum(np.arange(tw), tw - 1 - np.arange(tw))
+        w = np.minimum(np.minimum(ii[:, None], jj[None, :]), feather_radius).astype(np.float64) + 1.0
+        w[~valid] = 0.0
+        zz = np.where(valid, z, 0.0)
+
+        col0 = int(round((b.left - left) / res))
+        row0 = int(round((top - b.top) / res))
+        r0, c0 = max(0, row0), max(0, col0)
+        r1, c1 = min(H, row0 + th), min(W, col0 + tw)
+        if r1 <= r0 or c1 <= c0:
+            continue
+        tr0, tc0 = r0 - row0, c0 - col0
+        accum_wz[r0:r1, c0:c1] += (w * zz)[tr0:tr0 + (r1 - r0), tc0:tc0 + (c1 - c0)]
+        accum_w[r0:r1, c0:c1] += w[tr0:tr0 + (r1 - r0), tc0:tc0 + (c1 - c0)]
+
+    out = np.full((H, W), np.nan, dtype=np.float32)
+    m = accum_w > 0
+    out[m] = (accum_wz[m] / accum_w[m]).astype(np.float32)
+
+    profile.update(driver="GTiff", height=H, width=W, transform=transform,
+                   crs=crs, count=1, dtype="float32", nodata=np.nan)
+    with rasterio.open(dst_path, "w", **profile) as d:
+        d.write(out, 1)
+
+
 def global_dsm(cfg, tiles: List[Tile]) -> None:
     """
     Merge tilewise DSMs and confidence maps in a global DSM and confidence map.
@@ -878,29 +1168,27 @@ def global_dsm(cfg, tiles: List[Tile]) -> None:
     save_folder = os.path.join(cfg["out_dir"], "tile_merging")
     os.makedirs(save_folder, exist_ok=True)
 
+    feather = cfg["dsm_merging_method"] == "feather"
+
     if dsms:
         global_dst_path_dsm = os.path.join(cfg["out_dir"], "dsm.tif")
-        merge_tiles_mp(nb_workers,
-                       global_dst_path_dsm,
-                       save_folder,
-                       dsms,
-                       bounds,
-                       res=cfg["dsm_resolution"],
-                       creation_options=creation_options,
-                       method=cfg["dsm_merging_method"],
-                       remove_merged=True)
+        if feather:
+            merge_tiles_feather(dsms, bounds, cfg["dsm_resolution"], global_dst_path_dsm)
+        else:
+            merge_tiles_mp(nb_workers, global_dst_path_dsm, save_folder, dsms, bounds,
+                           res=cfg["dsm_resolution"], creation_options=creation_options,
+                           method=cfg["dsm_merging_method"], remove_merged=True)
 
     if dsms_filtered:
         global_dst_path_dsm_filtered = os.path.join(cfg["out_dir"], "dsm-filtered.tif")
-        merge_tiles_mp(nb_workers,
-                       global_dst_path_dsm_filtered,
-                       save_folder,
-                       dsms_filtered,
-                       bounds,
-                       res=cfg["dsm_resolution"],
-                       creation_options=creation_options,
-                       method=cfg["dsm_merging_method"],
-                       remove_merged=True)
+        if feather:
+            merge_tiles_feather(dsms_filtered, bounds, cfg["dsm_resolution"],
+                                global_dst_path_dsm_filtered)
+        else:
+            merge_tiles_mp(nb_workers, global_dst_path_dsm_filtered, save_folder,
+                           dsms_filtered, bounds, res=cfg["dsm_resolution"],
+                           creation_options=creation_options,
+                           method=cfg["dsm_merging_method"], remove_merged=True)
 
     if confidence_maps:
         global_dst_path_dsm_confidence = os.path.join(cfg["out_dir"], "confidence.tif")
@@ -911,7 +1199,7 @@ def global_dsm(cfg, tiles: List[Tile]) -> None:
                        bounds,
                        res=cfg["dsm_resolution"],
                        creation_options=creation_options,
-                       method=cfg["dsm_merging_method"],
+                       method=("max" if feather else cfg["dsm_merging_method"]),
                        remove_merged=True)
 
     os.rmdir(save_folder)
@@ -1005,43 +1293,83 @@ def main(user_cfg, start_from=0):
             from s2p import rpc_utils
             roi = cfg['roi']
             rpc1 = cfg['images'][0]['rpcm']
-            rpc2 = cfg['images'][1]['rpcm']
-            g_matches = rpc_utils.matches_from_rpc(cfg, rpc1, rpc2,
-                                                   roi['x'], roi['y'], roi['w'], roi['h'],
-                                                   cfg['n_gcp_per_axis'])
-            H1g, H2g, _Fg = rectification.rectification_homographies(
-                g_matches, roi['x'], roi['y'], roi['w'], roi['h'])
+            # Compute one global rectification H PER PAIR. Each pair (ref vs
+            # image i) has its own epipolar geometry, so a single shared H is
+            # only valid for the pair it was fit on; reusing pair 1's H for the
+            # other pairs produces garbage heights there, which fusion then
+            # discards (near-empty DSM). Store keyed by pair index.
+            cfg['_global_H1'] = {}
+            cfg['_global_H2'] = {}
+            cfg['_dl_global_flip'] = {}
+            for i in range(1, len(cfg['images'])):
+                rpc2 = cfg['images'][i]['rpcm']
+                g_matches = rpc_utils.matches_from_rpc(cfg, rpc1, rpc2,
+                                                       roi['x'], roi['y'], roi['w'], roi['h'],
+                                                       cfg['n_gcp_per_axis'])
+                H1g, H2g, _Fg = rectification.rectification_homographies(
+                    g_matches, roi['x'], roi['y'], roi['w'], roi['h'])
 
-            # Global unipolarity + flip for DL stereo. Running these at image
-            # level (not per tile) guarantees every tile shares the same
-            # post-refinement H, so tile-boundary seams vanish.
-            if cfg.get('matching_algorithm') == 'dl_stereo':
-                t_margin = cfg.get('dl_unipolarity_margin', 50)
+                # Global unipolarity + flip for DL stereo, decided per pair so
+                # every tile of this pair shares one H (tile-boundary seams
+                # vanish) with the correct flip convention.
+                flip_i = False
+                if cfg.get('matching_algorithm') == 'dl_stereo':
+                    t_margin = cfg.get('dl_unipolarity_margin', 50)
+                    H2g_neg = rectification.register_horizontally_translation(
+                        g_matches, H1g, H2g, flag='negative')
+                    H2g_neg = np.dot(common.matrix_translation(-t_margin, 0), H2g_neg)
+                    mean_alt = np.mean(rpc_utils.altitude_range(cfg, rpc1,
+                                                                roi['x'], roi['y'],
+                                                                roi['w'], roi['h']))
+                    grows = rectification.disparity_grows_with_altitude(
+                        H1g, H2g_neg, rpc1, rpc2,
+                        roi['x'] + roi['w'] // 2, roi['y'] + roi['h'] // 2, mean_alt)
+                    flip_i = bool(not grows)
+                    if grows:
+                        H2g = H2g_neg
+                    else:
+                        H2g = rectification.register_horizontally_translation(
+                            g_matches, H1g, H2g, flag='positive')
+                        H2g = np.dot(common.matrix_translation(t_margin, 0), H2g)
+
+                cfg['_global_H1'][i] = H1g
+                cfg['_global_H2'][i] = H2g
+                cfg['_dl_global_flip'][i] = flip_i
+                logger.info('dl_global_rectification: pair %d global H from %d '
+                            'RPC matches on ROI %dx%d, flip=%s',
+                            i, len(g_matches), roi['w'], roi['h'], flip_i)
+        elif (cfg.get('matching_algorithm') == 'dl_stereo'
+              and cfg.get('dl_flip_mode', 'auto') == 'auto'):
+            # Per-tile (non-global) DL path: decide the unipolarity FLIP once
+            # per pair over the whole ROI and share it via cfg. rectify_pair
+            # runs in spawned workers whose module-global flip cache resets, so
+            # otherwise each worker's first tile decides on its own; in
+            # borderline-geometry regions (e.g. ROI far from a scene's nadir)
+            # different workers pick opposite flips, yielding garbage altitudes
+            # in some tiles that average_if_close then discards -> near-empty
+            # DSM. One ROI-wide decision per pair keeps every worker consistent.
+            from s2p import rpc_utils
+            roi = cfg['roi']
+            rpc1 = cfg['images'][0]['rpcm']
+            t_margin = cfg.get('dl_unipolarity_margin', 50)
+            cfg['_dl_flip_decision'] = {}
+            for i in range(1, len(cfg['images'])):
+                rpc2 = cfg['images'][i]['rpcm']
+                g_matches = rpc_utils.matches_from_rpc(cfg, rpc1, rpc2,
+                                                       roi['x'], roi['y'], roi['w'], roi['h'],
+                                                       cfg['n_gcp_per_axis'])
+                H1g, H2g, _Fg = rectification.rectification_homographies(
+                    g_matches, roi['x'], roi['y'], roi['w'], roi['h'])
                 H2g_neg = rectification.register_horizontally_translation(
                     g_matches, H1g, H2g, flag='negative')
                 H2g_neg = np.dot(common.matrix_translation(-t_margin, 0), H2g_neg)
-                mean_alt = np.mean(rpc_utils.altitude_range(cfg, rpc1,
-                                                            roi['x'], roi['y'],
-                                                            roi['w'], roi['h']))
+                mean_alt = np.mean(rpc_utils.altitude_range(cfg, rpc1, roi['x'],
+                                                            roi['y'], roi['w'], roi['h']))
                 grows = rectification.disparity_grows_with_altitude(
                     H1g, H2g_neg, rpc1, rpc2,
                     roi['x'] + roi['w'] // 2, roi['y'] + roi['h'] // 2, mean_alt)
-                # Seed the global flip cache so per-tile code agrees.
-                rectification._dl_global_flip_decision = not grows
-                if grows:
-                    H2g = H2g_neg
-                else:
-                    H2g = rectification.register_horizontally_translation(
-                        g_matches, H1g, H2g, flag='positive')
-                    H2g = np.dot(common.matrix_translation(t_margin, 0), H2g)
-                logger.info('dl_global_rectification: unipolarity applied globally; '
-                            'flip=%s', not grows)
-
-            cfg['_global_H1'] = H1g
-            cfg['_global_H2'] = H2g
-            logger.info('dl_global_rectification: computed global H from '
-                        '%d RPC virtual matches on ROI %dx%d',
-                        len(g_matches), roi['w'], roi['h'])
+                cfg['_dl_flip_decision'][i] = bool(not grows)
+                logger.info('dl flip (ROI-wide, pair %d): flip=%s', i, bool(not grows))
         successes = parallel.launch_calls(cfg, rectification_pair, tiles_pairs, nb_workers,
                               timeout=timeout)
 
@@ -1062,6 +1390,26 @@ def main(user_cfg, start_from=0):
         # update the tiles removing the discarded tiles
         tiles_pairs = [x for x, b in zip(tiles_pairs, tiles_usefulnesses) if b]
 
+
+    # Resumed runs (start_from >= 4) rebuild tiles_pairs from tiles.txt, which
+    # still lists pairs that earlier steps discarded (failed pointing /
+    # rectification / disp-range check) — their products are missing on disk.
+    # A fresh run drops them via the per-step `successes` filters above, which
+    # a resume skips, so re-derive the same filter from what actually exists.
+    if start_from >= 4:
+        def _pair_products_exist(tp):
+            _, t, i = tp
+            d = os.path.join(t.dir, 'pair_{}'.format(i))
+            need = ['H_ref.txt', 'H_sec.txt', 'disp_min_max.txt']
+            if start_from >= 5:
+                need.append('rectified_disp.tif')
+            return all(os.path.exists(os.path.join(d, f)) for f in need)
+        n_before = len(tiles_pairs)
+        tiles_pairs = [tp for tp in tiles_pairs if _pair_products_exist(tp)]
+        if len(tiles_pairs) < n_before:
+            logger.info('resume: dropped %d / %d tile-pairs whose products are '
+                        'missing (discarded by the original run)',
+                        n_before - len(tiles_pairs), n_before)
 
     # matching step:
     if start_from <= 4:
@@ -1105,8 +1453,20 @@ def main(user_cfg, start_from=0):
             logger.info('5c) computing global pairwise height offsets...')
             global_mean_heights(cfg, tiles)
 
+            # height-map fusion step (merge the n-1 pairs per tile):
+            logger.info('5d) merging height maps...')
+            parallel.launch_calls(cfg, heights_fusion, tiles_with_cfg, nb_workers,
+                                  timeout=timeout)
+
+            # inter-tile height registration (removes tile-boundary seams):
+            if cfg.get('inter_tile_align', True):
+                logger.info('5e) aligning tile heights...')
+                align_tile_heights(cfg, tiles)
+            else:
+                logger.info('5e) inter-tile alignment DISABLED (inter_tile_align=false)')
+
             # heights-to-ply step:
-            logger.info('5d) merging height maps and computing point clouds...')
+            logger.info('5f) computing point clouds...')
             parallel.launch_calls(cfg, heights_to_ply, tiles_with_cfg, nb_workers,
                                   timeout=timeout)
         else:
