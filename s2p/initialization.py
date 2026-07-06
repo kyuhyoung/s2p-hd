@@ -121,6 +121,21 @@ def check_parameters(cfg, d: dict) -> None:
     d['roi']['w'] = int(np.ceil(d['roi']['w']))
     d['roi']['h'] = int(np.ceil(d['roi']['h']))
 
+    # Clamp the ROI to the reference image bounds. A roi_geojson polygon can
+    # project (via RPC) to a window that starts a few px outside the image
+    # (negative x/y) or runs past its right/bottom edge. The resulting
+    # out-of-bounds border tiles read empty color/height windows and crash
+    # downstream (write_to_ply size mismatch, plyflatten assertion). Clamping
+    # here removes those tiles at the source instead of guarding each step.
+    with rasterio.open(d['images'][0]['img'], "r") as f:
+        _img_w, _img_h = f.width, f.height
+    _x0 = max(0, d['roi']['x'])
+    _y0 = max(0, d['roi']['y'])
+    _x1 = min(_img_w, d['roi']['x'] + d['roi']['w'])
+    _y1 = min(_img_h, d['roi']['y'] + d['roi']['h'])
+    d['roi']['x'], d['roi']['y'] = _x0, _y0
+    d['roi']['w'], d['roi']['h'] = max(0, _x1 - _x0), max(0, _y1 - _y0)
+
     # Reject unknown parameters. The known parameters are those defined in the
     # global config.cfg dictionary, plus the mandatory 'images' and 'roi'.
     # Failing loudly here prevents silent-ignore bugs after config key renames

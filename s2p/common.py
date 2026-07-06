@@ -226,7 +226,15 @@ def linear_stretching_and_quantization_8bit(img, p=1):
     Returns:
         numpy array with the quantized uint8 image
     """
-    a, b = np.nanpercentile(img, (p, 100 - p))
+    # np.nanpercentile collapses to a scalar (not a 2-tuple) when img is empty
+    # or all-NaN, which happens for degenerate edge tiles (e.g. negative-offset
+    # tiles at a restricted-ROI border). Guard against it: such tiles have no
+    # usable colors, so return a zero (black) buffer of the same shape rather
+    # than crashing the whole run in this cosmetic PLY-coloring step.
+    bounds = np.ravel(np.nanpercentile(img, (p, 100 - p)))
+    if bounds.size < 2 or not np.all(np.isfinite(bounds)) or bounds[-1] <= bounds[0]:
+        return np.zeros(np.shape(img), dtype=np.uint8)
+    a, b = float(bounds[0]), float(bounds[-1])
     img = np.round(255 * (np.clip(img, a, b) - a) / (b - a))
     img = np.nan_to_num(img, nan=0)
     return img.astype(np.uint8)
