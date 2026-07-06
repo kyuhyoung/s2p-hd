@@ -489,14 +489,21 @@ def disparity_range(cfg, rpc1, rpc2, x, y, w, h, H1, H2, matches, A=None):
             d_hi = rpc_utils.altitude_range_to_disp_range(h0 + bm, h0 + bm, rpc1,
                                                           rpc2, x, y, w, h, H1, H2, A)
             up = float(np.mean(d_hi) - np.mean(d_lo))
-            # BOTH sides, not just the computed "up" side: the per-tile
-            # rectification orientation (det sign of H from SIFT matches) can
-            # flip tile-to-tile, so the sign of alt->disp is not reliable per
-            # tile (Daejeon lower: tiles 5 km apart got opposite signs and the
-            # one-sided extension missed the towers on two of three sites).
+            # Extend ONLY the far-from-zero end of the (unipolarity-registered)
+            # range. Registration anchors the near-zero end at ~-t_margin, so
+            # buildings always live on the far end; extending the near end
+            # instead (or both, as previously tried) shifts EVERY disparity
+            # deeper by the extension amount, which pushes FoundationStereo's
+            # hierarchical inference out of its sweet spot and degrades the
+            # whole tile (Daejeon lower: ground moved -50 -> -485 px and the
+            # towers the margin was meant to save were lost again). The far
+            # end is sign-robust: no per-tile alt->disp direction needed.
             span = abs(up)
-            sift_disp = (sift_disp[0] - span, sift_disp[1] + span)
-            logging.info("building margin %s m -> disp extension +-%.1f px, range %s",
+            if abs(sift_disp[0]) >= abs(sift_disp[1]):
+                sift_disp = (sift_disp[0] - span, sift_disp[1])
+            else:
+                sift_disp = (sift_disp[0], sift_disp[1] + span)
+            logging.info("building margin %s m -> far-end extension %.1f px, range %s",
                          bm, span, sift_disp)
 
     # compute altitude range disparity if needed
