@@ -376,7 +376,16 @@ def write_to_ply(path_to_ply_file, xyz, colors=None, proj_com='', confidence='')
     valid = np.all(np.isfinite(xyz_list), axis=1)
 
     if colors is not None:
-        colors_list = colors.transpose(1, 2, 0).reshape(-1, colors.shape[0])[valid]
+        colors_flat = colors.transpose(1, 2, 0).reshape(-1, colors.shape[0])
+        if colors_flat.shape[0] == valid.shape[0]:
+            colors_list = colors_flat[valid]
+        else:
+            # Degenerate border tile: the color window read was clipped/empty
+            # (e.g. negative-offset tiles when the restricted ROI starts a few
+            # px outside the image), so its flattened size doesn't match the
+            # height map. Such tiles are all-NaN and yield no points anyway —
+            # drop colors instead of crashing the whole run.
+            colors_list = None
     else:
         colors_list = None
 
