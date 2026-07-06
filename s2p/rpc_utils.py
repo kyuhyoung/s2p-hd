@@ -13,6 +13,7 @@ import srtm4
 
 from s2p import geographiclib
 from s2p import common
+from s2p import homography
 
 
 logger = logging.getLogger(__name__)
@@ -410,10 +411,10 @@ def alt_to_disp(rpc1, rpc2, x, y, alt, H1, H2, A=None):
     if A is not None:
         logging.info("applying pointing error correction")
         # correct coordinates of points in im2, according to A
-        p2 = common.points_apply_homography(np.linalg.inv(A), p2)
+        p2 = homography.points_apply_homography(np.linalg.inv(A), p2)
 
-    p1 = common.points_apply_homography(H1, p1)
-    p2 = common.points_apply_homography(H2, p2)
+    p1 = homography.points_apply_homography(H1, p1)
+    p2 = homography.points_apply_homography(H2, p2)
     # np.testing.assert_allclose(p1[:, 1], p2[:, 1], atol=0.1)
     disp = p2[:, 0] - p1[:, 0]
     return disp
