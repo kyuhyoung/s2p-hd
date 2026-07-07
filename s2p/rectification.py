@@ -344,14 +344,24 @@ def register_horizontally_translation(matches, H1, H2, flag='center', debug=Fals
         logging.info("Residual vertical disparities: max, min, mean. Should be zero")
         logging.info("%s %s %s", np.max(y2 - y1), np.min(y2 - y1), np.mean(y2 - y1))
 
-    # compute the disparity offset according to selected option
+    # compute the disparity offset according to selected option.
+    # 앵커 계산 전에 이상치 매치를 제거한다: min/max 앵커는 가장 극단적인 매치
+    # 하나에 정합 전체가 인질로 잡히는 구조라, 가짜 SIFT 매치 하나가 지면 밴드를
+    # 수백 px 깊은 곳에 앉혀 DL 매처를 어려운 영역으로 밀어넣는다
+    # (대전 lower full: 지면이 -50대가 아니라 -500에 앉음, 런마다 ±240px 요동).
+    d_all = x2 - x1
+    _med = np.median(d_all)
+    _mad = np.median(np.abs(d_all - _med))
+    d_rob = d_all[np.abs(d_all - _med) <= 5 * 1.4826 * _mad + 1e-6]
+    if d_rob.size == 0:
+        d_rob = d_all
     t = 0
     if (flag == 'center'):
-        t = np.mean(x2 - x1)
+        t = np.mean(d_rob)
     if (flag == 'positive'):
-        t = np.min(x2 - x1)
+        t = np.min(d_rob)
     if (flag == 'negative'):
-        t = np.max(x2 - x1)
+        t = np.max(d_rob)
 
     # correct H2 with a translation
     return np.dot(common.matrix_translation(-t, 0), H2)
@@ -489,22 +499,18 @@ def disparity_range(cfg, rpc1, rpc2, x, y, w, h, H1, H2, matches, A=None):
             d_hi = rpc_utils.altitude_range_to_disp_range(h0 + bm, h0 + bm, rpc1,
                                                           rpc2, x, y, w, h, H1, H2, A)
             up = float(np.mean(d_hi) - np.mean(d_lo))
-            # Extend ONLY the far-from-zero end of the (unipolarity-registered)
-            # range. Registration anchors the near-zero end at ~-t_margin, so
-            # buildings always live on the far end; extending the near end
-            # instead (or both, as previously tried) shifts EVERY disparity
-            # deeper by the extension amount, which pushes FoundationStereo's
-            # hierarchical inference out of its sweet spot and degrades the
-            # whole tile (Daejeon lower: ground moved -50 -> -485 px and the
-            # towers the margin was meant to save were lost again). The far
-            # end is sign-robust: no per-tile alt->disp direction needed.
-            span = abs(up)
-            if abs(sift_disp[0]) >= abs(sift_disp[1]):
-                sift_disp = (sift_disp[0] - span, sift_disp[1])
+            # 부호 있는 단측 확장: alt->disp 변환(타일 자신의 H/A 사용)이 주는
+            # 방향으로만 넓힌다. 이 방향 계산의 신뢰성은 RPC 대조로 확인됨
+            # (대전 lower 아파트 타일: 예언 지면 -503/지붕 -327 = 실측과 일치,
+            # 즉 이 pair에서는 고도가 높을수록 0에 가깝다). 과거의 "방향을 믿을
+            # 수 없다"는 결론과 far-end/양측 확장 시도는 정합 이상치 요동을
+            # 확장 문제로 오진한 것이었다 (registration robust화로 원인 제거).
+            if up >= 0:
+                sift_disp = (sift_disp[0], sift_disp[1] + up)
             else:
-                sift_disp = (sift_disp[0], sift_disp[1] + span)
-            logging.info("building margin %s m -> far-end extension %.1f px, range %s",
-                         bm, span, sift_disp)
+                sift_disp = (sift_disp[0] + up, sift_disp[1])
+            logging.info("building margin %s m -> signed extension %+.1f px, range %s",
+                         bm, up, sift_disp)
 
     # compute altitude range disparity if needed
     if cfg['disp_range_method'] == 'fixed_altitude_range':
