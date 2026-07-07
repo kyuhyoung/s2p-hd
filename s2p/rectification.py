@@ -621,6 +621,7 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         disp_min, disp_max: horizontal disparity range
         success: bool (can be false if not enough matches, invalid homographies, ...)
     """
+    _dl_canonical = False   # 방향 정준화 수행 여부 (수행 시 flip 기계장치 비활성)
     global _dl_global_flip_decision  # may be read early (global-H branch) or
                                       # written later (per-tile flip decision).
                                       # Hoist so both access paths are valid.
@@ -693,6 +694,39 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
             logging.info("rectification.rectify_pair.rectification_homographies assertion failed")
             return None, None, None, None, False
 
+        # --- 방향 정준화 (DL 경로) ---
+        # rectification_homographies가 만드는 H의 좌우 방향(orientation)은
+        # SIFT 매치 분포에 따라 타일마다 뒤집힌다(det 부호 복불복). 방향이
+        # 뒤집힌 타일에서는 고도가 높을수록 시차가 0 쪽으로 이동해 unipolarity
+        # 금지선을 넘고, 고층 건물이 매칭 불가가 된다 (대전 lower 아파트:
+        # 동일 설정에서 방향 +인 타일은 타워 포착, -인 타일은 실패 — 단일타일
+        # 하네스 A/B로 확정). 타일 자신의 RPC 기하로 "고도 증가 -> 시차 감소
+        # (더 깊은 음수)"가 되도록 강제해 동전던지기를 제거한다.
+        if cfg.get('matching_algorithm') == 'dl_stereo':
+            try:
+                _cx, _cy = x + w // 2, y + h // 2
+                _h0 = float(np.mean(rpc_utils.altitude_range(cfg, rpc1, x, y, w, h)))
+                _d0 = rpc_utils.alt_to_disp(rpc1, rpc2, _cx, _cy, _h0, H1, H2, A)
+                _d1 = rpc_utils.alt_to_disp(rpc1, rpc2, _cx, _cy, _h0 + 100, H1, H2, A)
+                _up = float(np.mean(np.atleast_1d(_d1)) - np.mean(np.atleast_1d(_d0)))
+                _dl_canonical = True
+                if _up > 0:
+                    M = np.array([[-1., 0., 0.], [0., 1., 0.], [0., 0., 1.]])
+                    H1 = np.dot(M, H1)
+                    H2 = np.dot(M, H2)
+                    # 거울 반전으로 ROI bbox가 음수 좌표로 가므로 원점 재정규화
+                    # (rectification_homographies의 bbox 규약 복원)
+                    _roi = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+                    _pts = homography.points_apply_homography(H1, _roi)
+                    _x0, _y0 = common.bounding_box2D(_pts)[:2]
+                    _Tn = common.matrix_translation(-_x0, -_y0)
+                    H1 = np.dot(_Tn, H1)
+                    H2 = np.dot(_Tn, H2)
+                    logging.info('orientation canonicalized (mirrored): up %+.2f px/100m -> %+.2f',
+                                 _up, -_up)
+            except Exception:
+                logging.exception('orientation canonicalization failed; keeping original H')
+
     if cfg['register_with_shear'] and not _used_global_H:
         # compose H2 with a horizontal shear to reduce the disparity range
         a = np.mean(rpc_utils.altitude_range(cfg, rpc1, x, y, w, h))
@@ -748,7 +782,12 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
                 # (near-empty DSM). cfg is pickled to every worker -> consistent.
                 _cfg_flip = cfg.get('_dl_flip_decision', {}).get(pair_idx)
 
-                if flip_mode == 'always':
+                if _dl_canonical:
+                    # 방향 정준화가 이미 "고도증가 -> 시차 깊어짐"을 타일별로
+                    # 보장했으므로 두 번째 거울(image flip)은 금지 — 거울 두 장이
+                    # 조합되면 pair별로 최종 방향이 반대로 갈린다 (A/B 실측).
+                    need_flip = False
+                elif flip_mode == 'always':
                     need_flip = True
                 elif flip_mode == 'never':
                     need_flip = False
