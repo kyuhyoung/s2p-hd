@@ -702,7 +702,8 @@ def rectify_pair(cfg, im1, im2, rpc1, rpc2, x, y, w, h, out1, out2, A=None, sift
         # 동일 설정에서 방향 +인 타일은 타워 포착, -인 타일은 실패 — 단일타일
         # 하네스 A/B로 확정). 타일 자신의 RPC 기하로 "고도 증가 -> 시차 감소
         # (더 깊은 음수)"가 되도록 강제해 동전던지기를 제거한다.
-        if cfg.get('matching_algorithm') == 'dl_stereo':
+        if (cfg.get('matching_algorithm') == 'dl_stereo'
+                and cfg.get('dl_orientation_canonical', True)):
             try:
                 _cx, _cy = x + w // 2, y + h // 2
                 _h0 = float(np.mean(rpc_utils.altitude_range(cfg, rpc1, x, y, w, h)))

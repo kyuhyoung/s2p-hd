@@ -156,6 +156,10 @@ def get_default_config() -> dict:
     # search window excludes tall buildings (fatal on long-baseline pairs).
     # 0 disables (upstream behaviour).
     cfg['disp_range_building_margin'] = 0
+
+    # per-tile rectification orientation canonicalization (DL stereo).
+    # False = 예전 동작(타일별 방향 복불복) — A/B 재현용
+    cfg['dl_orientation_canonical'] = True
     cfg['disp_range_exogenous_low_margin'] = -10
     cfg['disp_range_exogenous_high_margin'] = +100
 
