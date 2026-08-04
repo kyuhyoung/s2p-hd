@@ -26,3 +26,9 @@ ipynb
 iterate.dat
 
 .idea
+
+# DL stereo tile-size probing artifacts
+*.log
+fs_verify/
+max_tile_logs*/
+max_tile_results_default_backup.json

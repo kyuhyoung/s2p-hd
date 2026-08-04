@@ -1,0 +1,142 @@
+[
+  {
+    "label": "dl_stereo (diachronic-monster)",
+    "max_side": 2752,
+    "trials": 11,
+    "peak": {
+      "model": "monster",
+      "label": "dl_stereo (diachronic-monster)",
+      "size": 2752,
+      "status": "ok",
+      "peak_alloc_mb": 19753,
+      "peak_reserved_mb": 22478,
+      "nvsmi_peak_mb": null,
+      "sec": 35.4,
+      "msg": "",
+      "load_sec": 9.9,
+      "out_shape": [
+        2752,
+        2752
+      ]
+    },
+    "gpu": 0,
+    "note": "boundary=oom",
+    "fail_size": 2816,
+    "fail_detail": {
+      "model": "monster",
+      "label": "dl_stereo (diachronic-monster)",
+      "size": 2816,
+      "status": "oom",
+      "peak_alloc_mb": 19326,
+      "peak_reserved_mb": 22550,
+      "nvsmi_peak_mb": null,
+      "sec": null,
+      "msg": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.89 GiB. GPU 0 has a total capacity of 23.46 GiB of which 1.20 GiB is free. Process 746655 has 22.25 GiB memory in use. Of the allocated memory 17.34 GiB is allocated by PyTorch, and 4.68 GiB is reserved by PyTorch but unallocated. If reserved"
+    }
+  },
+  {
+    "label": "monster (mix_all)",
+    "max_side": 2752,
+    "trials": 11,
+    "peak": {
+      "model": "monster",
+      "label": "monster (mix_all)",
+      "size": 2752,
+      "status": "ok",
+      "peak_alloc_mb": 19753,
+      "peak_reserved_mb": 22478,
+      "nvsmi_peak_mb": null,
+      "sec": 35.6,
+      "msg": "",
+      "load_sec": 9.7,
+      "out_shape": [
+        2752,
+        2752
+      ]
+    },
+    "gpu": 0,
+    "note": "boundary=oom",
+    "fail_size": 2816,
+    "fail_detail": {
+      "model": "monster",
+      "label": "monster (mix_all)",
+      "size": 2816,
+      "status": "oom",
+      "peak_alloc_mb": 19326,
+      "peak_reserved_mb": 22550,
+      "nvsmi_peak_mb": null,
+      "sec": null,
+      "msg": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.89 GiB. GPU 0 has a total capacity of 23.46 GiB of which 1.20 GiB is free. Process 789547 has 22.25 GiB memory in use. Of the allocated memory 17.34 GiB is allocated by PyTorch, and 4.68 GiB is reserved by PyTorch but unallocated. If reserved"
+    }
+  },
+  {
+    "label": "foundationstereo",
+    "max_side": 2112,
+    "trials": 11,
+    "peak": {
+      "model": "foundationstereo",
+      "label": "foundationstereo",
+      "size": 2112,
+      "status": "ok",
+      "peak_alloc_mb": 19777,
+      "peak_reserved_mb": 22842,
+      "nvsmi_peak_mb": null,
+      "sec": 12.7,
+      "msg": "",
+      "load_sec": 12.9,
+      "out_shape": [
+        2112,
+        2112
+      ]
+    },
+    "gpu": 1,
+    "note": "boundary=oom",
+    "fail_size": 2176,
+    "fail_detail": {
+      "model": "foundationstereo",
+      "label": "foundationstereo",
+      "size": 2176,
+      "status": "oom",
+      "peak_alloc_mb": 18780,
+      "peak_reserved_mb": 23536,
+      "nvsmi_peak_mb": null,
+      "sec": null,
+      "msg": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.61 GiB. GPU 0 has a total capacity of 23.46 GiB of which 611.06 MiB is free. Process 1735124 has 22.86 GiB memory in use. Of the allocated memory 18.34 GiB is allocated by PyTorch, and 4.31 GiB is reserved by PyTorch but unallocated. If reser"
+    }
+  },
+  {
+    "label": "stereoanywhere",
+    "max_side": 1600,
+    "trials": 9,
+    "peak": {
+      "model": "stereoanywhere",
+      "label": "stereoanywhere",
+      "size": 1600,
+      "status": "ok",
+      "peak_alloc_mb": 21211,
+      "peak_reserved_mb": 22866,
+      "nvsmi_peak_mb": null,
+      "sec": 10.8,
+      "msg": "",
+      "load_sec": 8.9,
+      "out_shape": [
+        1600,
+        1600
+      ]
+    },
+    "gpu": 0,
+    "note": "boundary=oom",
+    "fail_size": 1664,
+    "fail_detail": {
+      "model": "stereoanywhere",
+      "label": "stereoanywhere",
+      "size": 1664,
+      "status": "oom",
+      "peak_alloc_mb": 21445,
+      "peak_reserved_mb": 23030,
+      "nvsmi_peak_mb": null,
+      "sec": null,
+      "msg": "OutOfMemoryError: CUDA out of memory. Tried to allocate 2.15 GiB. GPU 0 has a total capacity of 23.46 GiB of which 785.06 MiB is free. Process 835992 has 22.69 GiB memory in use. Of the allocated memory 20.94 GiB is allocated by PyTorch, and 1.55 GiB is reserved by PyTorch but unallocated. If reserv"
+    }
+  }
+]
